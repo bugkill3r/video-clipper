@@ -1,6 +1,6 @@
 # VideoClipper
 
-An AI-powered video highlight generator that automatically extracts the most interesting segments from videos, similar to OpusClip.
+An AI-powered video highlight generator that automatically extracts the most interesting segments from videos.
 
 ## Features
 
