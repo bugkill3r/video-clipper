@@ -23,7 +23,7 @@ An AI-powered video highlight generator that automatically extracts the most int
 1. Clone the repository:
 ```bash
 git clone https://github.com/bugkill3r/video-clipper.git
-cd videoclipper
+cd video-clipper
 ```
 
 2. Install dependencies:
