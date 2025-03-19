@@ -34,7 +34,7 @@ def main():
     "--duration",
     "-d",
     type=int,
-    default=60,
+    default=30,
     help="Target duration of the highlight video in seconds.",
 )
 @click.option(
@@ -51,13 +51,13 @@ def main():
 @click.option(
     "--min-segment",
     type=int,
-    default=3,
+    default=5,
     help="Minimum segment duration in seconds.",
 )
 @click.option(
     "--max-segment",
     type=int,
-    default=15,
+    default=45,
     help="Maximum segment duration in seconds.",
 )
 @click.option(

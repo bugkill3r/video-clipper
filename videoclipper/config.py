@@ -16,9 +16,9 @@ DEFAULT_CONFIG: Dict[str, any] = {
     "default_audio_codec": "aac",
 
     # Highlight generation
-    "default_highlight_duration": 60,  # seconds
-    "min_segment_duration": 3,  # seconds
-    "max_segment_duration": 15,  # seconds
+    "default_highlight_duration": 30,  # seconds (shorter overall highlights)
+    "min_segment_duration": 5,  # seconds
+    "max_segment_duration": 45,  # seconds (longer segments for viral clips)
 
     # Analysis settings
     "scene_detection_threshold": 30.0,
