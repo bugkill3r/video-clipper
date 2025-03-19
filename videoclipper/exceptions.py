@@ -30,3 +30,8 @@ class AnalysisError(VideoClipperError):
 class ClippingError(VideoClipperError):
     """Exception raised for clipping-related errors."""
     pass
+
+
+class VideoProcessingError(VideoClipperError):
+    """Exception raised for video processing errors."""
+    pass

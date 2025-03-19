@@ -3,11 +3,15 @@ Command-line interface for VideoClipper.
 """
 
 import os
+import time
 import click
 from rich.console import Console
 from rich.progress import Progress
 
+from videoclipper.clipper.video_editor import VideoEditor
+from videoclipper.analyzer.scene_detector import SceneDetector
 from videoclipper.exceptions import FileError, VideoClipperError
+from videoclipper.models.segment import Segment
 from videoclipper.utils.file_utils import get_file_extension, ensure_directory
 from videoclipper.utils.youtube import download_youtube_video, is_youtube_url, get_video_id
 
@@ -122,36 +126,95 @@ def process(
         console.print(f"Target highlight duration: {duration} seconds")
         console.print(f"Number of clips: {num_clips}")
         
-        # Here we'd actually call the video processing logic
-        # For now just show a placeholder for each clip
+        # Implement the actual video processing logic
+        segments = []
         with Progress() as progress:
+            # Step 1: Load video
             task1 = progress.add_task("[cyan]Loading video...", total=100)
+            video_editor = VideoEditor(video_path)
             progress.update(task1, advance=100)
             
+            # Step 2: Analyze video for scene changes
             task2 = progress.add_task("[cyan]Analyzing content...", total=100)
+            scene_detector = SceneDetector(video_path)
+            scene_segments = []
+            try:
+                # Use scene detection to find interesting segments
+                scene_segments = scene_detector.detect_scenes()
+                console.print(f"[green]Found {len(scene_segments)} scene changes[/green]")
+            except Exception as e:
+                console.print(f"[yellow]Scene detection failed: {e}, using fallback method[/yellow]")
+                # If scene detection fails, manually create segments spanning the video
+                # This is a fallback to ensure we have some segments to work with
+                video_duration = video_editor._load_video().duration
+                step = video_duration / (num_clips * 2)  # Create 2x as many segments as needed clips
+                for i in range(num_clips * 2):
+                    start_time = i * step
+                    end_time = min(video_duration, start_time + step)
+                    segments.append(
+                        Segment(
+                            start=start_time,
+                            end=end_time,
+                            score=0.5,  # Average importance
+                        )
+                    )
+                
+            # Use the detected scene segments if available
+            if scene_segments:
+                # Convert segments to the correct format if necessary
+                for segment in scene_segments:
+                    segments.append(
+                        Segment(
+                            start=segment.start,
+                            end=segment.end,
+                            score=segment.score,
+                        )
+                    )
+                    
             progress.update(task2, advance=100)
             
-            task3 = progress.add_task("[cyan]Generating highlights...", total=100)
-            progress.update(task3, advance=100)
-        
-        # Generate placeholder clip filenames
-        clip_files = []
-        for i in range(num_clips):
-            clip_name = f"highlight_{i+1}.mp4"
-            clip_path = os.path.join(output_dir, clip_name)
+            # Step 3: Generate highlight clips
+            task3 = progress.add_task("[cyan]Generating highlights...", total=num_clips)
             
-            # In a real implementation, we would generate and save the clip
-            # For now, just add to our list
-            clip_files.append(clip_path)
-            
-            # Simulate creating empty files
-            with open(clip_path, 'w') as f:
-                f.write("This is a placeholder for a video clip file")
+            clip_files = []
+            for i in range(num_clips):
+                # For multiple clips, divide the available segments evenly
+                segment_count = len(segments)
+                segments_per_clip = max(1, segment_count // num_clips)
+                start_idx = i * segments_per_clip
+                end_idx = min(segment_count, start_idx + segments_per_clip)
+                
+                # Get the segments for this clip
+                clip_segments = segments[start_idx:end_idx]
+                
+                # Create the output path for this clip
+                clip_name = f"highlight_{i+1}.mp4"
+                clip_path = os.path.join(output_dir, clip_name)
+                
+                try:
+                    # Create the highlight clip
+                    output_path, clip_duration = video_editor.create_clip(
+                        clip_segments, 
+                        clip_path,
+                        max_duration=max_segment
+                    )
+                    clip_files.append(output_path)
+                    console.print(f"[green]Created clip {i+1}/{num_clips} ({clip_duration:.1f}s)[/green]")
+                except Exception as e:
+                    console.print(f"[red]Failed to create clip {i+1}: {e}[/red]")
+                
+                progress.update(task3, advance=1)
+                
+                # Small delay to prevent overloading the system
+                time.sleep(0.5)
         
         # Print results
-        console.print(f"[bold green]✓ Generated {num_clips} highlight clips:[/bold green]")
-        for clip in clip_files:
-            console.print(f"  - {clip}")
+        if clip_files:
+            console.print(f"[bold green]✓ Generated {len(clip_files)} highlight clips:[/bold green]")
+            for clip in clip_files:
+                console.print(f"  - {clip}")
+        else:
+            console.print("[bold red]Failed to generate any clips[/bold red]")
             
     except FileError as e:
         console.print(f"[bold red]File error: {e}[/bold red]")

@@ -35,6 +35,7 @@ output/
 *.mov
 *.wav
 *.mp3
+*.m4a
 
 # Jupyter Notebooks
 .ipynb_checkpoints

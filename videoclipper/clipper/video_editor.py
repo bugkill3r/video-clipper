@@ -2,7 +2,7 @@
 
 from typing import List, Optional, Tuple
 
-from moviepy.editor import VideoFileClip, concatenate_videoclips
+from moviepy import VideoFileClip, concatenate_videoclips
 
 from videoclipper.clipper.base import VideoClipper
 from videoclipper.clipper.segment_selector import SegmentSelector
@@ -73,7 +73,8 @@ class VideoEditor(VideoClipper):
                 end = min(self._duration or float('inf'), segment.end)
 
                 if start < end:
-                    subclip = video.subclip(start, end)
+                    # Use subclipped method instead of subclip
+                    subclip = video.subclipped(start, end)
                     subclips.append(subclip)
 
             if not subclips:
