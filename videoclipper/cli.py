@@ -90,6 +90,9 @@ def process(
     console = Console()
 
     try:
+        # Initialize segments list
+        segments = []
+        
         # Determine if input is a YouTube URL or local file
         if is_youtube_url(video_input):
             # Handle YouTube URL
@@ -155,7 +158,6 @@ def process(
         console.print(f"Number of clips: {num_clips}")
         
         # Implement the actual video processing logic
-        segments = []
         with Progress() as progress:
             # Step 1: Load video
             task1 = progress.add_task("[cyan]Loading video...", total=100)
