@@ -4,8 +4,6 @@ Command-line interface for VideoClipper.
 
 import os
 import time
-import traceback
-import subprocess
 import click
 from rich.console import Console
 from rich.progress import Progress
@@ -42,8 +40,8 @@ def main():
 )
 @click.option(
     "--transcribe/--no-transcribe",
-    default=True,  # Changed to True for better captions
-    help="Enable transcription for content analysis and captions.",
+    default=False,
+    help="Enable transcription for content analysis.",
 )
 @click.option(
     "--whisper-model",
@@ -70,19 +68,8 @@ def main():
     default=3,
     help="Number of highlight clips to generate.",
 )
-@click.option(
-    "--captions/--no-captions",
-    default=True,
-    help="Add colorful captions to the clips (requires transcription).",
-)
-@click.option(
-    "--highlight-words",
-    type=str,
-    help="Comma-separated list of words to highlight in captions.",
-)
 def process(
-    video_input, output_dir, duration, transcribe, whisper_model, min_segment, max_segment, num_clips,
-    captions, highlight_words
+    video_input, output_dir, duration, transcribe, whisper_model, min_segment, max_segment, num_clips
 ):
     """Process a video or YouTube link to create highlight clips.
     
@@ -148,94 +135,10 @@ def process(
             video_editor = VideoEditor(video_path)
             progress.update(task1, advance=100)
             
-            # Step 2: Analyze video for scene changes and transcribe if enabled
+            # Step 2: Analyze video for scene changes
             task2 = progress.add_task("[cyan]Analyzing content...", total=100)
             scene_detector = SceneDetector(video_path)
             scene_segments = []
-            speech_segments = []
-            
-            # Process transcription if enabled (needed for captions)
-            if transcribe or captions:
-                try:
-                    from videoclipper.transcriber.whisper_transcriber import WhisperTranscriber
-                    
-                    # Check if the video file exists
-                    if not os.path.exists(video_path):
-                        console.print(f"[yellow]Video file not found: {video_path}[/yellow]")
-                        raise FileNotFoundError(f"Video file not found: {video_path}")
-                    
-                    # Check if ffmpeg is installed for audio extraction
-                    try:
-                        # Try different possible ffmpeg paths
-                        ffmpeg_cmd = "ffmpeg"
-                        ffmpeg_paths = [
-                            "ffmpeg",
-                            "/opt/homebrew/bin/ffmpeg",  # Homebrew on Apple Silicon
-                            "/usr/local/bin/ffmpeg",     # Homebrew on Intel Mac
-                            "/usr/bin/ffmpeg"            # System path
-                        ]
-                        
-                        for path in ffmpeg_paths:
-                            try:
-                                subprocess.run([path, "-version"], capture_output=True, check=True)
-                                ffmpeg_cmd = path
-                                console.print(f"[green]Found ffmpeg at: {path}[/green]")
-                                break
-                            except (subprocess.SubprocessError, FileNotFoundError):
-                                continue
-                        else:
-                            # If the loop completes without a break, ffmpeg was not found
-                            console.print("[yellow]ffmpeg not found, which is required for transcription[/yellow]")
-                            console.print("[yellow]Please install ffmpeg using 'brew install ffmpeg'[/yellow]")
-                            raise RuntimeError("ffmpeg not found, which is required for transcription")
-                    except Exception as e:
-                        console.print(f"[yellow]Error checking ffmpeg: {e}[/yellow]")
-                        raise RuntimeError(f"Error checking ffmpeg: {e}")
-                    
-                    console.print(f"[cyan]Transcribing audio with Whisper ({whisper_model} model)...[/cyan]")
-                    
-                    # Extract audio to a temporary file
-                    temp_audio = os.path.join(os.path.dirname(video_path), "temp_audio.wav")
-                    extract_cmd = [ffmpeg_cmd, "-i", video_path, "-q:a", "0", "-map", "a", temp_audio, "-y"]
-                    
-                    console.print(f"[cyan]Extracting audio to {temp_audio}...[/cyan]")
-                    try:
-                        subprocess.run(extract_cmd, capture_output=True, check=True)
-                        if os.path.exists(temp_audio):
-                            console.print(f"[green]Audio extracted successfully to {temp_audio}[/green]")
-                        else:
-                            console.print(f"[yellow]Audio extraction failed - output file not found[/yellow]")
-                            raise FileNotFoundError(f"Audio file not found: {temp_audio}")
-                    except Exception as e:
-                        console.print(f"[yellow]Audio extraction failed: {e}[/yellow]")
-                        raise RuntimeError(f"Audio extraction failed: {e}")
-                    
-                    # Transcribe from the audio file
-                    transcriber = WhisperTranscriber(temp_audio)
-                    speech_segments = transcriber.transcribe(
-                        model_size=whisper_model,
-                        min_segment_length=3.0  # Longer segments for better captions
-                    )
-                    
-                    # Clean up temp file
-                    if os.path.exists(temp_audio):
-                        os.remove(temp_audio)
-                    
-                    if speech_segments:
-                        console.print(f"[green]Found {len(speech_segments)} speech segments[/green]")
-                        # Add to segments list with higher score for segments with text
-                        for segment in speech_segments:
-                            # Boost score for segments with text for better selection
-                            segment.score = min(1.0, segment.score * 1.2)
-                            segments.append(segment)
-                            console.print(f"[dim]Segment {segment.start:.1f}-{segment.end:.1f}: {segment.text}[/dim]")
-                except Exception as e:
-                    import traceback
-                    console.print(f"[yellow]Transcription failed: {e}[/yellow]")
-                    console.print(f"[dim]{traceback.format_exc()}[/dim]")
-                    console.print("[yellow]Continuing without captions[/yellow]")
-            
-            # Detect scene changes
             try:
                 # Use scene detection to find interesting segments
                 scene_segments = scene_detector.detect_scenes()
@@ -261,31 +164,13 @@ def process(
             if scene_segments:
                 # Convert segments to the correct format if necessary
                 for segment in scene_segments:
-                    # Check if this segment overlaps with any speech segment
-                    overlapping_speech = False
-                    for speech_seg in speech_segments:
-                        # If there's significant overlap (>50%)
-                        overlap_start = max(segment.start, speech_seg.start)
-                        overlap_end = min(segment.end, speech_seg.end)
-                        if overlap_end > overlap_start:
-                            overlap_duration = overlap_end - overlap_start
-                            if overlap_duration > 0.5 * (segment.end - segment.start):
-                                overlapping_speech = True
-                                # Copy the text from speech segment to scene segment if it exists
-                                if hasattr(speech_seg, 'text') and speech_seg.text:
-                                    segment.text = speech_seg.text
-                                break
-                    
-                    # Only add non-overlapping segments to avoid duplicates
-                    if not overlapping_speech:
-                        segments.append(
-                            Segment(
-                                start=segment.start,
-                                end=segment.end,
-                                score=segment.score,
-                                segment_type=segment.segment_type
-                            )
+                    segments.append(
+                        Segment(
+                            start=segment.start,
+                            end=segment.end,
+                            score=segment.score,
                         )
+                    )
                     
             progress.update(task2, advance=100)
             
@@ -305,54 +190,33 @@ def process(
             )
             
             # Process all segments once to filter, merge, etc.
-            try:
-                processed_segments = selector.process_segments(segments)
-            except Exception as e:
-                console.print(f"[yellow]Error processing segments: {e}[/yellow]")
-                console.print("[yellow]Using original segments[/yellow]")
-                processed_segments = segments
+            processed_segments = selector.process_segments(segments)
             
             clip_files = []
-            
-            # Process highlight words if provided
-            highlight_keywords = None
-            if highlight_words:
-                highlight_keywords = [word.strip() for word in highlight_words.split(',')]
-                console.print(f"[cyan]Using highlight keywords: {highlight_keywords}[/cyan]")
-            
             if num_clips == 1:
-                try:
-                    # For a single clip, just use all processed segments with improved selection
-                    selected_segments = selector.select_top_segments(
-                        processed_segments, 
-                        max_duration=duration,
-                        min_spacing=10.0  # Minimum 10s spacing to avoid repetitive content
-                    )
-                except Exception as e:
-                    console.print(f"[yellow]Error selecting top segments: {e}[/yellow]")
-                    console.print("[yellow]Using all processed segments[/yellow]")
-                    selected_segments = sorted(processed_segments, key=lambda x: x.start)
+                # For a single clip, just use all processed segments with improved selection
+                selected_segments = selector.select_top_segments(
+                    processed_segments, 
+                    max_duration=duration,
+                    min_spacing=10.0  # Minimum 10s spacing to avoid repetitive content
+                )
                 
                 # Create the output path for this clip
                 clip_name = "highlight_1.mp4"
                 clip_path = os.path.join(output_dir, clip_name)
                 
                 try:
-                    # Create the highlight clip with viral style and captions
+                    # Create the highlight clip with viral style
                     output_path, clip_duration = video_editor.create_clip(
                         selected_segments, 
                         clip_path,
                         max_duration=max_segment,
-                        viral_style=True,
-                        add_captions=captions,
-                        highlight_keywords=highlight_keywords
+                        viral_style=True
                     )
                     clip_files.append(output_path)
                     console.print(f"[green]Created clip 1/1 ({clip_duration:.1f}s)[/green]")
                 except Exception as e:
                     console.print(f"[red]Failed to create clip: {e}[/red]")
-                    import traceback
-                    console.print(f"[dim]{traceback.format_exc()}[/dim]")
                 
                 progress.update(task3, advance=1)
             else:
@@ -386,37 +250,28 @@ def process(
                     
                     # Select top segments for this clip
                     clip_duration = min(duration, max_segment)
-                    try:
-                        selected_segments = selector.select_top_segments(
-                            zone_segments, 
-                            max_duration=clip_duration,
-                            min_spacing=5.0  # Minimum 5s spacing
-                        )
-                    except Exception as e:
-                        console.print(f"[yellow]Error selecting top segments for clip {i+1}: {e}[/yellow]")
-                        console.print("[yellow]Using all zone segments[/yellow]")
-                        selected_segments = sorted(zone_segments, key=lambda x: x.start)
+                    selected_segments = selector.select_top_segments(
+                        zone_segments, 
+                        max_duration=clip_duration,
+                        min_spacing=5.0  # Minimum 5s spacing
+                    )
                     
                     # Create the output path for this clip
                     clip_name = f"highlight_{i+1}.mp4"
                     clip_path = os.path.join(output_dir, clip_name)
                     
                     try:
-                        # Create the highlight clip with viral style and captions
+                        # Create the highlight clip with viral style
                         output_path, clip_duration = video_editor.create_clip(
                             selected_segments, 
                             clip_path,
                             max_duration=max_segment,
-                            viral_style=True,
-                            add_captions=captions,
-                            highlight_keywords=highlight_keywords
+                            viral_style=True
                         )
                         clip_files.append(output_path)
                         console.print(f"[green]Created clip {i+1}/{num_clips} ({clip_duration:.1f}s)[/green]")
                     except Exception as e:
                         console.print(f"[red]Failed to create clip {i+1}: {e}[/red]")
-                        import traceback
-                        console.print(f"[dim]{traceback.format_exc()}[/dim]")
                     
                     progress.update(task3, advance=1)
                     
