@@ -3,9 +3,11 @@
 import os
 import re
 import subprocess
-from typing import Dict, Optional
+import datetime
+from typing import Dict, List, Optional, Tuple
 
 from videoclipper.exceptions import FileError
+from videoclipper.models.segment import Segment, SegmentType
 
 
 def is_youtube_url(url: str) -> bool:
@@ -63,15 +65,78 @@ def get_safe_filename(video_id: str, title: Optional[str] = None) -> str:
         return video_id
 
 
-def download_youtube_video(url: str, output_dir: str) -> Dict[str, str]:
-    """Download a YouTube video using yt-dlp.
+def parse_srt_time(time_str: str) -> float:
+    """Convert SRT timestamp format (HH:MM:SS,mmm) to seconds.
+    
+    Args:
+        time_str: SRT format timestamp (e.g., "00:01:23,456")
+        
+    Returns:
+        Time in seconds
+    """
+    hours, minutes, seconds = time_str.replace(',', '.').split(':')
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def parse_srt_file(srt_path: str) -> List[Segment]:
+    """Parse an SRT subtitle file and convert to segments.
+    
+    Args:
+        srt_path: Path to SRT file
+        
+    Returns:
+        List of segments with text and timing
+    """
+    if not os.path.exists(srt_path):
+        return []
+    
+    try:
+        with open(srt_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except UnicodeDecodeError:
+        # Try different encodings if UTF-8 fails
+        try:
+            with open(srt_path, 'r', encoding='latin-1') as f:
+                content = f.read()
+        except Exception as e:
+            print(f"Error reading subtitles file: {e}")
+            return []
+    
+    segments = []
+    pattern = r'(\d+)\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\n([\s\S]*?)(?=\n\d+\n|$)'
+    
+    for match in re.finditer(pattern, content):
+        idx, start_time, end_time, text = match.groups()
+        # Clean text (remove extra newlines and whitespace)
+        text = re.sub(r'\n+', ' ', text).strip()
+        
+        # Convert times to seconds
+        start_sec = parse_srt_time(start_time)
+        end_sec = parse_srt_time(end_time)
+        
+        # Create segment
+        segment = Segment(
+            start=start_sec,
+            end=end_sec,
+            score=0.7,  # Decent default score for subtitle segments
+            segment_type=SegmentType.SPEECH,
+            text=text
+        )
+        segments.append(segment)
+    
+    return segments
+
+
+def download_youtube_video(url: str, output_dir: str, download_captions: bool = True) -> Dict[str, any]:
+    """Download a YouTube video and optionally its captions using yt-dlp.
     
     Args:
         url: YouTube URL
         output_dir: Directory to save the video
+        download_captions: Whether to download captions if available
         
     Returns:
-        Dictionary with video info
+        Dictionary with video info including subtitle path if available
         
     Raises:
         FileError: If download fails
@@ -83,7 +148,6 @@ def download_youtube_video(url: str, output_dir: str) -> Dict[str, str]:
     os.makedirs(output_dir, exist_ok=True)
     
     video_id = get_video_id(url)
-    output_template = os.path.join(output_dir, f"{video_id}.%(ext)s")
     
     try:
         # First get video info
@@ -106,28 +170,51 @@ def download_youtube_video(url: str, output_dir: str) -> Dict[str, str]:
         safe_filename = get_safe_filename(video_id, title)
         output_template = os.path.join(output_dir, f"{safe_filename}.%(ext)s")
         
-        # Now download the video
+        # Build download command
         download_cmd = [
             "yt-dlp",
             "-f", "mp4/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-            "-o", output_template,
-            url
+            "-o", output_template
         ]
         
+        # Add subtitle/caption downloading if requested
+        subtitles_path = None
+        if download_captions:
+            # Add automatic subtitle download options
+            download_cmd.extend([
+                "--write-auto-sub",          # Download auto-generated subtitles
+                "--sub-lang", "en",          # Prefer English subtitles
+                "--convert-subs", "srt",     # Convert to SRT format (easier to parse)
+                "--write-sub"                # Write available subtitles
+            ])
+        
+        # Add the URL at the end
+        download_cmd.append(url)
+        
+        # Execute the download command
         subprocess.run(download_cmd, check=True)
         
-        # Find the downloaded file
-        video_files = [f for f in os.listdir(output_dir) if f.startswith(safe_filename)]
+        # Find the downloaded video file
+        video_files = [f for f in os.listdir(output_dir) if f.startswith(safe_filename) and f.endswith((".mp4", ".mkv", ".webm"))]
         if not video_files:
             raise FileError(f"Download completed but couldn't find video file in {output_dir}")
         
         video_path = os.path.join(output_dir, video_files[0])
         
+        # Find subtitle file if it exists
+        if download_captions:
+            subtitle_files = [f for f in os.listdir(output_dir) 
+                             if f.startswith(safe_filename) and f.endswith((".srt", ".vtt"))]
+            if subtitle_files:
+                subtitles_path = os.path.join(output_dir, subtitle_files[0])
+                print(f"Found subtitles: {subtitles_path}")
+        
         return {
             "id": video_id,
             "title": title,
             "path": video_path,
-            "duration": duration
+            "duration": duration,
+            "subtitles_path": subtitles_path
         }
     
     except subprocess.CalledProcessError as e:

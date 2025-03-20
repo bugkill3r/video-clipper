@@ -15,7 +15,7 @@ from videoclipper.analyzer.scene_detector import SceneDetector
 from videoclipper.exceptions import FileError, VideoClipperError
 from videoclipper.models.segment import Segment, SegmentType
 from videoclipper.utils.file_utils import get_file_extension, ensure_directory
-from videoclipper.utils.youtube import download_youtube_video, is_youtube_url, get_video_id
+from videoclipper.utils.youtube import download_youtube_video, is_youtube_url, get_video_id, parse_srt_file
 
 
 @click.group()
@@ -111,6 +111,21 @@ def process(
             video_path = video_info["path"]
             console.print(f"[green]✓ Downloaded to: {video_path}[/green]")
             
+            # Check if we have subtitles from YouTube
+            if "subtitles_path" in video_info and video_info["subtitles_path"]:
+                console.print(f"[green]✓ Found YouTube captions: {video_info['subtitles_path']}[/green]")
+                # Parse the subtitle file into segments
+                try:
+                    youtube_segments = parse_srt_file(video_info["subtitles_path"])
+                    if youtube_segments:
+                        console.print(f"[green]✓ Extracted {len(youtube_segments)} segments from YouTube captions[/green]")
+                        # Add to segments list
+                        segments.extend(youtube_segments)
+                        # Since we have YouTube captions, we can skip transcription
+                        transcribe = False
+                except Exception as e:
+                    console.print(f"[yellow]Warning: Failed to parse YouTube captions: {e}[/yellow]")
+                    
             # Use video ID and title for output directory if not specified
             if not output_dir:
                 output_dir = os.path.join("output", video_id)
