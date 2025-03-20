@@ -176,37 +176,101 @@ def process(
             # Step 3: Generate highlight clips
             task3 = progress.add_task("[cyan]Generating highlights...", total=num_clips)
             
+            # Process segments using the improved segment selector
+            selector = SegmentSelector(
+                video_duration=video_editor._duration or 0,
+                min_segment_duration=min_segment,
+                max_segment_duration=max_segment,
+            )
+            
+            # Process all segments once to filter, merge, etc.
+            processed_segments = selector.process_segments(segments)
+            
             clip_files = []
-            for i in range(num_clips):
-                # For multiple clips, divide the available segments evenly
-                segment_count = len(segments)
-                segments_per_clip = max(1, segment_count // num_clips)
-                start_idx = i * segments_per_clip
-                end_idx = min(segment_count, start_idx + segments_per_clip)
-                
-                # Get the segments for this clip
-                clip_segments = segments[start_idx:end_idx]
+            if num_clips == 1:
+                # For a single clip, just use all processed segments with improved selection
+                selected_segments = selector.select_top_segments(
+                    processed_segments, 
+                    max_duration=duration,
+                    min_spacing=10.0  # Minimum 10s spacing to avoid repetitive content
+                )
                 
                 # Create the output path for this clip
-                clip_name = f"highlight_{i+1}.mp4"
+                clip_name = "highlight_1.mp4"
                 clip_path = os.path.join(output_dir, clip_name)
                 
                 try:
-                    # Create the highlight clip
+                    # Create the highlight clip with viral style
                     output_path, clip_duration = video_editor.create_clip(
-                        clip_segments, 
+                        selected_segments, 
                         clip_path,
-                        max_duration=max_segment
+                        max_duration=max_segment,
+                        viral_style=True
                     )
                     clip_files.append(output_path)
-                    console.print(f"[green]Created clip {i+1}/{num_clips} ({clip_duration:.1f}s)[/green]")
+                    console.print(f"[green]Created clip 1/1 ({clip_duration:.1f}s)[/green]")
                 except Exception as e:
-                    console.print(f"[red]Failed to create clip {i+1}: {e}[/red]")
+                    console.print(f"[red]Failed to create clip: {e}[/red]")
                 
                 progress.update(task3, advance=1)
+            else:
+                # For multiple clips, divide the video into time zones
+                video_duration = video_editor._duration or 0
+                zone_size = video_duration / num_clips
                 
-                # Small delay to prevent overloading the system
-                time.sleep(0.5)
+                for i in range(num_clips):
+                    # Define the time zone for this clip
+                    zone_start = i * zone_size
+                    zone_end = min(video_duration, (i + 1) * zone_size)
+                    
+                    # Filter segments that fall primarily within this zone
+                    zone_segments = [
+                        seg for seg in processed_segments 
+                        if seg.start >= zone_start and seg.start < zone_end
+                    ]
+                    
+                    # Add some segments from adjacent zones to ensure enough content
+                    if len(zone_segments) < 5:
+                        # Add segments that are close to this zone
+                        adjacent_segments = [
+                            seg for seg in processed_segments
+                            if abs(seg.start - zone_start) < zone_size * 0.3
+                            or abs(seg.start - zone_end) < zone_size * 0.3
+                        ]
+                        zone_segments.extend(adjacent_segments)
+                        
+                        # Remove duplicates
+                        zone_segments = list({seg.start: seg for seg in zone_segments}.values())
+                    
+                    # Select top segments for this clip
+                    clip_duration = min(duration, max_segment)
+                    selected_segments = selector.select_top_segments(
+                        zone_segments, 
+                        max_duration=clip_duration,
+                        min_spacing=5.0  # Minimum 5s spacing
+                    )
+                    
+                    # Create the output path for this clip
+                    clip_name = f"highlight_{i+1}.mp4"
+                    clip_path = os.path.join(output_dir, clip_name)
+                    
+                    try:
+                        # Create the highlight clip with viral style
+                        output_path, clip_duration = video_editor.create_clip(
+                            selected_segments, 
+                            clip_path,
+                            max_duration=max_segment,
+                            viral_style=True
+                        )
+                        clip_files.append(output_path)
+                        console.print(f"[green]Created clip {i+1}/{num_clips} ({clip_duration:.1f}s)[/green]")
+                    except Exception as e:
+                        console.print(f"[red]Failed to create clip {i+1}: {e}[/red]")
+                    
+                    progress.update(task3, advance=1)
+                    
+                    # Small delay to prevent overloading the system
+                    time.sleep(0.5)
         
         # Print results
         if clip_files:
