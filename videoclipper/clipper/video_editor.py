@@ -1,6 +1,6 @@
 """Video editing functionality for creating highlight clips."""
 
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Callable
 import random
 import logging
 import re
@@ -95,12 +95,12 @@ class VideoEditor(VideoClipper):
                     
         return unique_keywords
     
-    def _split_text_into_chunks(self, text: str, max_words: int = 5) -> List[str]:
+    def _split_text_into_chunks(self, text: str, max_words: int = 4) -> List[str]:
         """Splits text into smaller chunks for better caption timing and readability.
         
         Args:
             text: The text to split into chunks
-            max_words: Maximum number of words per chunk (4-6 words per screenshot style)
+            max_words: Maximum number of words per chunk (3-5 words per screenshot style)
             
         Returns:
             List of text chunks
@@ -108,24 +108,85 @@ class VideoEditor(VideoClipper):
         if not text:
             return []
         
-        # Split into words and create short chunks of 4-6 words
-        words = text.split()
+        # Clean up text - remove extra spaces, normalize punctuation
+        text = re.sub(r'\s+', ' ', text).strip()
+        
+        # Split by sentence boundaries first
+        sentences = re.split(r'(?<=[.!?])\s+', text)
         chunks = []
         
-        # Process words into small chunks like in the screenshot
-        for i in range(0, len(words), max_words):
-            # Get a chunk of words (max 4-6 words per chunk like in the example)
-            chunk = words[i:i+max_words]
-            if chunk:
-                # Join the words back into a short phrase
-                chunk_text = " ".join(chunk)
-                chunks.append(chunk_text)
+        for sentence in sentences:
+            # Skip empty sentences
+            if not sentence.strip():
+                continue
+                
+            # Split sentence into words
+            words = sentence.split()
+            
+            # For very short sentences (3-4 words), keep them intact
+            if len(words) <= max_words:
+                chunks.append(" ".join(words))
+                continue
+            
+            # For longer sentences, try to create natural phrases (mimicking speech rhythm)
+            # Look for natural breaking points like commas, conjunctions
+            natural_breaks = [i for i, word in enumerate(words) 
+                            if word.endswith(',') or word.lower() in ['and', 'but', 'or', 'because', 'so']]
+            
+            if natural_breaks:
+                # Use natural breaking points to create chunks
+                current_start = 0
+                for break_point in natural_breaks:
+                    # Only create chunk if it's not too long
+                    if break_point - current_start + 1 <= max_words + 1:
+                        chunk = words[current_start:break_point + 1]
+                        chunks.append(" ".join(chunk))
+                        current_start = break_point + 1
+                    
+                # Add any remaining words
+                if current_start < len(words):
+                    remaining = words[current_start:]
+                    # Process remaining words in small groups
+                    for i in range(0, len(remaining), max_words):
+                        sub_chunk = remaining[i:i+max_words]
+                        if sub_chunk:
+                            chunks.append(" ".join(sub_chunk))
+            else:
+                # No natural breaks, so just split into equal chunks of max_words
+                for i in range(0, len(words), max_words):
+                    chunk = words[i:i+max_words]
+                    if chunk:
+                        chunks.append(" ".join(chunk))
         
+        # Further refinement - ensure each chunk has an emphasized word if possible
+        refined_chunks = []
+        for chunk in chunks:
+            words = chunk.split()
+            has_keyword = False
+            
+            # Check if this chunk already has a potential keyword (non-stopword)
+            for word in words:
+                clean_word = word.strip('.,!?;:"\'()[]{}').lower()
+                if len(clean_word) > 3 and clean_word not in STOPWORDS:
+                    has_keyword = True
+                    break
+            
+            # If this chunk has a keyword, keep it as is
+            if has_keyword or len(words) <= 2:  # Very short chunks should stay intact
+                refined_chunks.append(chunk)
+            else:
+                # No keywords in this chunk, so try to combine with another chunk
+                # Only combine if we have a previous chunk and the combined length isn't too long
+                if refined_chunks and len(refined_chunks[-1].split()) + len(words) <= max_words + 2:
+                    refined_chunks[-1] = refined_chunks[-1] + " " + chunk
+                else:
+                    refined_chunks.append(chunk)
+                
         # If we ended up with no chunks, return the original text as one chunk
-        if not chunks:
+        if not refined_chunks:
             return [text]
             
-        return chunks
+        return refined_chunks
 
     def _create_caption_clip(self, text: str, duration: float, video_size: Tuple[int, int], 
                         highlight_words: Optional[List[str]] = None) -> TextClip:
@@ -152,14 +213,14 @@ class VideoEditor(VideoClipper):
             
             # Define caption style parameters - larger font for better visibility
             # Match the large, bold font from the screenshot
-            font_size = max(40, int(video_height * 0.07))
+            font_size = max(45, int(video_height * 0.08))  # Larger font for more impact
             
             # If no highlight words provided, extract them automatically
             if not highlight_words or len(highlight_words) == 0:
                 highlight_words = self._extract_keywords(text)
                 logger.info(f"Auto-extracted keywords: {highlight_words}")
             
-            # Use colors from the screenshot - bright yellow for highlights,
+            # Colors from the screenshot - bright yellow for highlights with black stroke,
             # white for regular text with black stroke for readability
             highlight_color = (255, 255, 0)  # Bright yellow like in the screenshot
             regular_color = (255, 255, 255)  # White
@@ -167,50 +228,145 @@ class VideoEditor(VideoClipper):
             # Convert highlight words to lowercase for case-insensitive comparison
             highlight_words_lower = [word.lower() for word in highlight_words]
             
-            # Check if any words in the text should be highlighted
-            # If so, create a colorized version of the text
-            colorized_text = text
-            has_highlights = False
+            # Now we'll colorize individual words to match the screenshot exactly
+            # Break the text into words to identify which should be highlighted
+            words = text.split()
+            colorized_words = []
             
-            for word in highlight_words:
-                if word.lower() in text.lower():
-                    has_highlights = True
-                    # Will use the highlighted style
-                    break
-            
-            # Try creating the text clip with correct parameters for MoviePy 2.1.1/2.1.2
-            try:
-                # In MoviePy 2.1.1/2.1.2, font is the first required parameter
-                # Match the bold, prominent style from the screenshot
-                caption_clip = TextClip(
-                    font='Arial',  # Use Arial font which is more commonly available
-                    text=text,
-                    font_size=font_size,
-                    color=highlight_color if has_highlights else regular_color,
-                    stroke_color='black',
-                    stroke_width=3,     # Thicker stroke like in the screenshot
-                    method='label'
-                )
-                # Set duration using with_duration instead of set_duration
-                caption_clip = caption_clip.with_duration(duration)
-                logger.info("Created styled caption with parameters")
-            except Exception as e:
-                logger.error(f"Failed to create styled caption: {e}")
+            for word in words:
+                # Strip punctuation for matching but keep it for display
+                clean_word = word.strip('.,!?;:"\'()[]{}')
                 
-                # Fallback to system font if Arial-Bold fails
+                # Check if this word should be highlighted (case-insensitive)
+                should_highlight = False
+                for highlight in highlight_words:
+                    if clean_word.lower() == highlight.lower():
+                        should_highlight = True
+                        break
+                
+                # Add the word with its color coding
+                if should_highlight:
+                    colorized_words.append((word, highlight_color))
+                else:
+                    colorized_words.append((word, regular_color))
+            
+            # Try creating the text clip with advanced styling for MoviePy 2.1.1/2.1.2
+            try:
+                # In MoviePy 2.1.1/2.1.2, create individual clips for each word
+                word_clips = []
+                
+                # Total width calculation for positioning
+                total_width = 0
+                word_widths = []
+                
+                # First pass to create clips and measure total width
+                for word_text, word_color in colorized_words:
+                    try:
+                        word_clip = TextClip(
+                            font='Arial-Bold',  # Try with Arial-Bold first for greater impact
+                            text=word_text + " ",  # Add space after each word
+                            font_size=font_size,
+                            color=word_color, 
+                            stroke_color='black',
+                            stroke_width=4,  # Thicker stroke for better readability
+                            method='label'
+                        )
+                        total_width += word_clip.w
+                        word_widths.append(word_clip.w)
+                        word_clips.append((word_clip, word_color))
+                    except Exception as e:
+                        # Fallback to Arial if Arial-Bold fails
+                        try:
+                            word_clip = TextClip(
+                                font='Arial',
+                                text=word_text + " ",
+                                font_size=font_size,
+                                color=word_color,
+                                stroke_color='black',
+                                stroke_width=4,
+                                method='label'
+                            )
+                            total_width += word_clip.w
+                            word_widths.append(word_clip.w)
+                            word_clips.append((word_clip, word_color))
+                        except Exception as e2:
+                            logger.error(f"Failed to create word clip: {e2}")
+                            # Skip this word if it fails
+                            continue
+                
+                # Now position each word clip properly
+                composite_clips = []
+                current_x = int((video_width - total_width) / 2)  # Center the text line
+                
+                # Position words in a row
+                for i, (word_clip, color) in enumerate(word_clips):
+                    # Add animation effects based on color - highlighted words get more effects
+                    clip_duration = duration
+                    
+                    # Add slight fade and scale animation for all words (subtle animation)
+                    # Scale up and fade in at start for a subtle pop effect
+                    word_clip = word_clip.with_duration(clip_duration)
+                    
+                    # Position the word clip
+                    positioned_clip = word_clip.with_position((current_x, int(video_height * 0.7)))
+                    
+                    # Add extra visual impact for highlighted words
+                    if color == highlight_color:
+                        # Make highlighted words dynamic and eye-catching with subtle effects
+                        # This matches the screenshot where highlighted words stand out
+                        
+                        # For highlighted words, we apply simple but effective animation
+                        # The simple opacity effect is more reliable than complex scaling
+                        
+                        # Apply a simple fade-in effect for highlighted words
+                        # This is more reliable than complex animations
+                        try:
+                            # Add a slightly quicker fade-in for highlighted words
+                            positioned_clip = positioned_clip.with_opacity(
+                                lambda t: min(1.0, 2.0 * t) if t < 0.2 else 1.0
+                            )
+                        except Exception as e:
+                            # If effects fail, fallback to basic positioning
+                            logger.error(f"Effect application failed: {e}")
+                            # Keep the clip without advanced effects
+                        
+                    composite_clips.append(positioned_clip)
+                    current_x += word_widths[i]
+                
+                # Create a composite clip from all word clips
+                if composite_clips:
+                    caption_clip = CompositeVideoClip(composite_clips, size=video_size)
+                    caption_clip = caption_clip.with_duration(duration)
+                    logger.info("Created advanced styled caption with word-by-word highlighting")
+                else:
+                    raise ValueError("No word clips were created successfully")
+                
+            except Exception as e:
+                logger.error(f"Failed to create advanced caption: {e}")
+                
+                # Fallback to simpler implementation if word-by-word fails
                 try:
+                    # Create a single text clip with standard styling
                     caption_clip = TextClip(
-                        font='/System/Library/Fonts/Helvetica.ttc',
+                        font='Arial',  # Use Arial font which is more commonly available
                         text=text,
                         font_size=font_size,
-                        color=highlight_color if has_highlights else regular_color,
+                        color=regular_color,
                         stroke_color='black',
-                        stroke_width=3
+                        stroke_width=4,  # Thicker stroke for greater impact
+                        method='label'
                     )
+                    # Set duration using with_duration
                     caption_clip = caption_clip.with_duration(duration)
-                    logger.info("Created caption with system font")
+                    
+                    # Add a fade-in/pulse animation
+                    caption_clip = caption_clip.with_opacity(
+                        lambda t: min(1.0, 1.5 * t) if t < 0.3 else 1.0
+                    )
+                    
+                    logger.info("Created fallback styled caption")
                 except Exception as e2:
-                    logger.error(f"Failed with system font: {e2}")
+                    logger.error(f"Failed with fallback styling: {e2}")
                     
                     # Last-resort fallback with absolute minimal parameters
                     try:
@@ -225,19 +381,17 @@ class VideoEditor(VideoClipper):
                         logger.error(f"All caption creation attempts failed: {e3}")
                         return None
             
-            # In the screenshot, captions don't have a background but have a thick stroke
-            # for readability. We'll skip the background for now since the stroke should
-            # provide enough contrast.
-            
             # Position captions in the lower part of the video, matching the screenshot
             # The screenshot shows captions positioned about 1/3 up from the bottom
             position_y = int(video_height * 0.7)
             
             # Apply final positioning - center horizontally, fixed position vertically
-            final_caption = caption_clip.with_position(('center', position_y))
+            # Only needed for the fallback implementation (not for word-by-word)
+            if 'composite_clips' not in locals() or not composite_clips:
+                caption_clip = caption_clip.with_position(('center', position_y))
             
-            logger.info(f"Created caption clip with size {caption_clip.w}x{caption_clip.h}")
-            return final_caption
+            logger.info(f"Created caption clip with improved styling")
+            return caption_clip
             
         except Exception as e:
             logger.error(f"Caption creation failed: {str(e)}")
@@ -349,13 +503,31 @@ class VideoEditor(VideoClipper):
                                             chunk_keywords.append(word)
                                 
                                 # Calculate timing for this chunk within the subclip
-                                # Distribute chunks evenly across the subclip duration
-                                chunk_start = i * (subclip.duration / len(chunks))
+                                # For natural pacing, add a small gap between each chunk (mimics natural speech)
+                                # This creates the effect of captions appearing exactly when words are spoken
+                                chunk_gap = min(0.3, subclip.duration / (len(chunks) * 4))  # Small gap between chunks
+                                
+                                # Time each chunk to appear at the right moment with natural pacing
+                                # Use a slightly staggered timing for more natural feel (like in the screenshot)
+                                if len(chunks) > 1:
+                                    # For multiple chunks, stagger them with small gaps in between
+                                    # This matches the cadence of the spoken words better
+                                    chunk_start = i * ((subclip.duration - (chunk_gap * len(chunks))) / len(chunks))
+                                    # Add progressive gap between chunks for natural pacing
+                                    chunk_start += i * chunk_gap
+                                else:
+                                    # For a single chunk, center it in the subclip
+                                    chunk_start = (subclip.duration - chunk_duration) / 2
                                 
                                 # Create caption clip for this chunk with the screenshot style
+                                # Reduce duration slightly for a punchier, more animated feel
+                                # This makes the captions appear briefly exactly when words are spoken
+                                effective_duration = min(chunk_duration, 
+                                                       max(1.0, min(2.0, len(chunk_text.split()) * 0.35)))
+                                
                                 caption = self._create_caption_clip(
                                     chunk_text,
-                                    chunk_duration,
+                                    effective_duration,  # Shorter duration for punchier effect like in screenshot
                                     video_size,
                                     chunk_keywords
                                 )

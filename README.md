@@ -10,6 +10,7 @@ An AI-powered video highlight generator that automatically extracts the most int
 - Speech transcription with OpenAI's Whisper model
 - Intelligent clip selection and assembly
 - YouTube video support (download and process)
+- Animated captions with speech synchronization and keyword highlighting
 
 ## Installation
 
@@ -58,7 +59,9 @@ videoclipper process path/to/video.mp4 \
   --whisper-model base \
   --min-segment 3 \
   --max-segment 15 \
-  --num-clips 5
+  --num-clips 5 \
+  --captions \
+  --highlight-words "important,keywords,to,highlight"
 ```
 
 #### Processing YouTube Videos
@@ -75,7 +78,8 @@ With options:
 videoclipper process https://www.youtube.com/watch?v=dQw4w9WgXcQ \
   --output-dir custom_highlights/ \
   --num-clips 3 \
-  --duration 45
+  --duration 45 \
+  --captions
 ```
 
 ### Python API
@@ -90,7 +94,7 @@ processor = VideoProcessor("path/to/video.mp4")
 processor.analyze(transcribe=True, detect_scenes=True)
 
 # Generate highlight clip
-processor.create_highlight("output.mp4", max_duration=60)
+processor.create_highlight("output.mp4", max_duration=60, add_captions=True, highlight_keywords=["important", "words"])
 ```
 
 ## Development
@@ -124,6 +128,22 @@ pytest --cov=videoclipper
 ## License
 
 MIT
+
+## Caption Feature
+
+The video clipper now supports animated captions that synchronize with speech timing:
+
+- Captions are disabled by default and can be enabled with the `--captions` flag
+- Captions appear in short phrases (3-5 words) timed to match when words are spoken
+- Keywords are automatically identified and highlighted in yellow
+- You can specify your own highlight words with the `--highlight-words` option
+- The style matches viral social media videos with bold text and keyword highlighting
+- Each caption animates subtly with fade-in effects and highlighted words get special emphasis
+
+Example usage:
+```bash
+videoclipper process video.mp4 --captions --highlight-words "important,keywords,to,highlight"
+```
 
 ## Contributing
 

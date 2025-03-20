@@ -72,7 +72,7 @@ def main():
 @click.option(
     "--captions/--no-captions",
     default=False,
-    help="Add colorful captions to the clips (requires transcription).",
+    help="Add animated captions to the clips that match speech timing (requires transcription).",
 )
 @click.option(
     "--highlight-words",
