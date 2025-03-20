@@ -40,8 +40,8 @@ def main():
 )
 @click.option(
     "--transcribe/--no-transcribe",
-    default=False,
-    help="Enable transcription for content analysis.",
+    default=True,  # Changed to True for better captions
+    help="Enable transcription for content analysis and captions.",
 )
 @click.option(
     "--whisper-model",
@@ -68,8 +68,19 @@ def main():
     default=3,
     help="Number of highlight clips to generate.",
 )
+@click.option(
+    "--captions/--no-captions",
+    default=True,
+    help="Add colorful captions to the clips (requires transcription).",
+)
+@click.option(
+    "--highlight-words",
+    type=str,
+    help="Comma-separated list of words to highlight in captions.",
+)
 def process(
-    video_input, output_dir, duration, transcribe, whisper_model, min_segment, max_segment, num_clips
+    video_input, output_dir, duration, transcribe, whisper_model, min_segment, max_segment, num_clips,
+    captions, highlight_words
 ):
     """Process a video or YouTube link to create highlight clips.
     
@@ -135,10 +146,35 @@ def process(
             video_editor = VideoEditor(video_path)
             progress.update(task1, advance=100)
             
-            # Step 2: Analyze video for scene changes
+            # Step 2: Analyze video for scene changes and transcribe if enabled
             task2 = progress.add_task("[cyan]Analyzing content...", total=100)
             scene_detector = SceneDetector(video_path)
             scene_segments = []
+            speech_segments = []
+            
+            # Process transcription if enabled (needed for captions)
+            if transcribe or captions:
+                try:
+                    from videoclipper.transcriber.whisper_transcriber import WhisperTranscriber
+                    
+                    console.print(f"[cyan]Transcribing audio with Whisper ({whisper_model} model)...[/cyan]")
+                    transcriber = WhisperTranscriber(video_path)
+                    speech_segments = transcriber.transcribe(
+                        model_size=whisper_model,
+                        min_segment_length=3.0  # Longer segments for better captions
+                    )
+                    
+                    if speech_segments:
+                        console.print(f"[green]Found {len(speech_segments)} speech segments[/green]")
+                        # Add to segments list with higher score for segments with text
+                        for segment in speech_segments:
+                            # Boost score for segments with text for better selection
+                            segment.score = min(1.0, segment.score * 1.2)
+                            segments.append(segment)
+                except Exception as e:
+                    console.print(f"[yellow]Transcription failed: {e}, continuing without captions[/yellow]")
+            
+            # Detect scene changes
             try:
                 # Use scene detection to find interesting segments
                 scene_segments = scene_detector.detect_scenes()
@@ -164,13 +200,31 @@ def process(
             if scene_segments:
                 # Convert segments to the correct format if necessary
                 for segment in scene_segments:
-                    segments.append(
-                        Segment(
-                            start=segment.start,
-                            end=segment.end,
-                            score=segment.score,
+                    # Check if this segment overlaps with any speech segment
+                    overlapping_speech = False
+                    for speech_seg in speech_segments:
+                        # If there's significant overlap (>50%)
+                        overlap_start = max(segment.start, speech_seg.start)
+                        overlap_end = min(segment.end, speech_seg.end)
+                        if overlap_end > overlap_start:
+                            overlap_duration = overlap_end - overlap_start
+                            if overlap_duration > 0.5 * (segment.end - segment.start):
+                                overlapping_speech = True
+                                # Copy the text from speech segment to scene segment if it exists
+                                if hasattr(speech_seg, 'text') and speech_seg.text:
+                                    segment.text = speech_seg.text
+                                break
+                    
+                    # Only add non-overlapping segments to avoid duplicates
+                    if not overlapping_speech:
+                        segments.append(
+                            Segment(
+                                start=segment.start,
+                                end=segment.end,
+                                score=segment.score,
+                                segment_type=segment.segment_type
+                            )
                         )
-                    )
                     
             progress.update(task2, advance=100)
             
@@ -205,13 +259,20 @@ def process(
                 clip_name = "highlight_1.mp4"
                 clip_path = os.path.join(output_dir, clip_name)
                 
+                # Process highlight words if provided
+                highlight_keywords = None
+                if highlight_words:
+                    highlight_keywords = [word.strip() for word in highlight_words.split(',')]
+                
                 try:
-                    # Create the highlight clip with viral style
+                    # Create the highlight clip with viral style and captions
                     output_path, clip_duration = video_editor.create_clip(
                         selected_segments, 
                         clip_path,
                         max_duration=max_segment,
-                        viral_style=True
+                        viral_style=True,
+                        add_captions=captions,
+                        highlight_keywords=highlight_keywords
                     )
                     clip_files.append(output_path)
                     console.print(f"[green]Created clip 1/1 ({clip_duration:.1f}s)[/green]")
@@ -261,12 +322,14 @@ def process(
                     clip_path = os.path.join(output_dir, clip_name)
                     
                     try:
-                        # Create the highlight clip with viral style
+                        # Create the highlight clip with viral style and captions
                         output_path, clip_duration = video_editor.create_clip(
                             selected_segments, 
                             clip_path,
                             max_duration=max_segment,
-                            viral_style=True
+                            viral_style=True,
+                            add_captions=captions,
+                            highlight_keywords=highlight_keywords
                         )
                         clip_files.append(output_path)
                         console.print(f"[green]Created clip {i+1}/{num_clips} ({clip_duration:.1f}s)[/green]")
