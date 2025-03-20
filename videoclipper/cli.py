@@ -155,7 +155,7 @@ def process(
             speech_segments = []
             
             # Process transcription if enabled (needed for captions)
-            if (transcribe or captions) and False:  # Temporarily disable transcription for debugging
+            if transcribe or captions:
                 try:
                     from videoclipper.transcriber.whisper_transcriber import WhisperTranscriber
                     
