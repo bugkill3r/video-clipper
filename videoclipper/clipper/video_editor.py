@@ -2,6 +2,9 @@
 
 from typing import List, Optional, Tuple
 import random
+import logging
+import nltk
+import numpy as np
 
 from moviepy import VideoFileClip, concatenate_videoclips
 from moviepy.video.VideoClip import TextClip, ColorClip
@@ -12,6 +15,23 @@ from videoclipper.clipper.segment_selector import SegmentSelector
 from videoclipper.exceptions import VideoProcessingError
 from videoclipper.models.segment import Segment, SegmentType
 from videoclipper.utils.validation import validate_output_path
+
+# Set up logging
+logger = logging.getLogger(__name__)
+
+# Initialize NLTK for better keyword extraction
+try:
+    nltk.download('punkt', quiet=True)
+    nltk.download('stopwords', quiet=True)
+    from nltk.corpus import stopwords
+    from nltk.tokenize import word_tokenize
+    STOPWORDS = set(stopwords.words('english'))
+    NLTK_AVAILABLE = True
+except Exception:
+    logger.warning("NLTK modules not available, falling back to basic keyword extraction")
+    NLTK_AVAILABLE = False
+    STOPWORDS = {'the', 'and', 'that', 'this', 'with', 'for', 'from', 'but', 'not', 'are', 'was',
+                'were', 'have', 'has', 'had', 'you', 'your', 'they', 'their', 'our', 'is', 'it'}
 
 
 class VideoEditor(VideoClipper):
@@ -44,6 +64,53 @@ class VideoEditor(VideoClipper):
             except Exception as e:
                 raise VideoProcessingError(f"Failed to load video {self.video_path}: {e}")
         return self._video
+    
+    def _extract_keywords(self, text: str, max_keywords: int = 3) -> List[str]:
+        """Extract important keywords from text.
+        
+        Args:
+            text: The text to extract keywords from
+            max_keywords: Maximum number of keywords to extract
+            
+        Returns:
+            List of extracted keywords
+        """
+        if not text:
+            return []
+            
+        # Clean and normalize the text
+        text = text.lower().strip()
+        
+        if NLTK_AVAILABLE:
+            # Use NLTK for better extraction
+            try:
+                words = word_tokenize(text)
+                # Filter out stopwords and short words
+                keywords = [word for word in words 
+                          if word.isalpha() and word not in STOPWORDS and len(word) > 3]
+                # Take the most frequent/important words
+                return keywords[:max_keywords]
+            except Exception as e:
+                logger.warning(f"NLTK keyword extraction failed: {e}")
+        
+        # Fallback to basic extraction
+        words = text.split()
+        # Filter stopwords and short words
+        keywords = [word.strip('.,!?;:"\'()[]{}') for word in words 
+                   if word.strip('.,!?;:"\'()[]{}').lower() not in STOPWORDS 
+                   and len(word.strip('.,!?;:"\'()[]{}')) > 3]
+        
+        # Return unique keywords
+        unique_keywords = []
+        seen = set()
+        for kw in keywords:
+            if kw not in seen and kw.isalpha():
+                seen.add(kw)
+                unique_keywords.append(kw)
+                if len(unique_keywords) >= max_keywords:
+                    break
+                    
+        return unique_keywords
 
     def _create_caption_clip(self, text: str, duration: float, video_size: Tuple[int, int], 
                         highlight_words: Optional[List[str]] = None) -> TextClip:
@@ -61,14 +128,23 @@ class VideoEditor(VideoClipper):
         try:
             if not text:
                 return None
+            
+            # Debug logs
+            logger.info(f"Creating caption for text: '{text}'")
+            logger.info(f"Duration: {duration}, Video size: {video_size}")
                 
             video_width, video_height = video_size
             
             # Define caption style parameters
-            font_size = max(24, int(video_height * 0.07))  # Scale with video height
+            font_size = max(28, int(video_height * 0.08))  # Increased font size
             
             # Set a default font - use system default
             font = None
+            
+            # If no highlight words provided, extract them automatically
+            if not highlight_words or len(highlight_words) == 0:
+                highlight_words = self._extract_keywords(text)
+                logger.info(f"Auto-extracted keywords: {highlight_words}")
             
             # Use enhanced styled text with colored words
             if highlight_words and len(highlight_words) > 0:
@@ -88,6 +164,7 @@ class VideoEditor(VideoClipper):
                 ]
                 
                 for word in words:
+                    # Check if this word is a keyword (case-insensitive)
                     word_clean = word.lower().strip(".,!?;:'\"()-")
                     is_highlight = any(word_clean == hw.lower() for hw in highlight_words)
                     
@@ -100,10 +177,10 @@ class VideoEditor(VideoClipper):
                     # Create text clip for this word
                     word_clip_args = {
                         'txt': word + " ",  # Add space after word
-                        'fontsize': font_size,
+                        'fontsize': font_size * (1.2 if is_highlight else 1.0),  # Slightly larger for highlights
                         'color': color,
                         'stroke_color': 'black',
-                        'stroke_width': 1.5,
+                        'stroke_width': 2.0 if is_highlight else 1.5,  # Thicker stroke for highlights
                         'method': 'label'
                     }
                     
@@ -113,7 +190,7 @@ class VideoEditor(VideoClipper):
                     if is_highlight:
                         shadow_args = {
                             'txt': word + " ",
-                            'fontsize': font_size,
+                            'fontsize': font_size * 1.2,
                             'color': 'black',
                             'stroke_width': 0,
                             'method': 'label'
@@ -129,15 +206,49 @@ class VideoEditor(VideoClipper):
                 
                 # Create background with certain opacity
                 bg_color = (0, 0, 0)
-                bg_opacity = 0.7
+                bg_opacity = 0.8  # Increased opacity for better contrast
                 
                 # Calculate total width and height needed
                 total_width = sum(clip.w for clip in word_clips)
                 max_height = max(clip.h for clip in word_clips)
                 
+                # Ensure width isn't too large and wrap if needed
+                if total_width > video_width * 0.9:
+                    # Create multiline text clip instead
+                    text_clip_args = {
+                        'txt': text,
+                        'fontsize': font_size,
+                        'color': 'white',
+                        'stroke_color': 'black',
+                        'stroke_width': 2.0,
+                        'method': 'label',
+                        'size': (int(video_width * 0.9), None),
+                        'align': 'center'
+                    }
+                    
+                    caption_clip = TextClip(**text_clip_args).set_duration(duration)
+                    
+                    # Create semi-transparent background
+                    bg_width = caption_clip.w + 60
+                    bg_height = caption_clip.h + 40
+                    
+                    bg = ColorClip(
+                        size=(int(bg_width), int(bg_height)),
+                        color=bg_color
+                    ).set_opacity(bg_opacity).set_duration(duration)
+                    
+                    # Composite with background
+                    caption_with_bg = CompositeVideoClip([
+                        bg,
+                        caption_clip.set_position(('center', 'center'))
+                    ], size=(int(bg_width), int(bg_height)))
+                    
+                    # Position at bottom of screen with padding
+                    return caption_with_bg.set_position(('center', video_height - bg_height - 30))
+                
                 # Create a background clip
-                bg_width = min(video_width * 0.95, total_width + 40)  # Add padding
-                bg_height = max_height + 20  # Add padding
+                bg_width = min(video_width * 0.95, total_width + 60)  # Add padding
+                bg_height = max_height + 40  # Add padding
                 
                 bg = ColorClip(
                     size=(int(bg_width), int(bg_height)),
@@ -149,7 +260,7 @@ class VideoEditor(VideoClipper):
                 x_offset = (bg_width - total_width) / 2  # Center text horizontally
                 
                 for word_clip in word_clips:
-                    word_clip = word_clip.set_position((x_offset, 10))  # 10px from top
+                    word_clip = word_clip.set_position((x_offset, 20))  # Center vertically
                     x_offset += word_clip.w
                     positioned_clips.append(word_clip)
                 
@@ -159,8 +270,8 @@ class VideoEditor(VideoClipper):
                     size=(int(bg_width), int(bg_height))
                 ).set_duration(duration)
                 
-                # Position at bottom of screen
-                caption_clip = caption_clip.set_position(('center', 'bottom'))
+                # Position at bottom of screen with padding
+                caption_clip = caption_clip.set_position(('center', video_height - bg_height - 30))
                 return caption_clip
             
             else:
@@ -171,7 +282,7 @@ class VideoEditor(VideoClipper):
                     'fontsize': font_size,
                     'color': 'white',
                     'stroke_color': 'black',
-                    'stroke_width': 1.5,
+                    'stroke_width': 2.0,
                     'method': 'label',
                     'size': (int(video_width * 0.9), None),
                     'align': 'center'
@@ -180,13 +291,13 @@ class VideoEditor(VideoClipper):
                 caption_clip = TextClip(**text_clip_args).set_duration(duration)
                 
                 # Create semi-transparent background
-                bg_width = caption_clip.w + 40
-                bg_height = caption_clip.h + 20
+                bg_width = caption_clip.w + 60
+                bg_height = caption_clip.h + 40
                 
                 bg = ColorClip(
                     size=(int(bg_width), int(bg_height)),
                     color=(0, 0, 0)
-                ).set_opacity(0.7).set_duration(duration)
+                ).set_opacity(0.8).set_duration(duration)
                 
                 # Composite with background
                 caption_with_bg = CompositeVideoClip([
@@ -195,10 +306,10 @@ class VideoEditor(VideoClipper):
                 ], size=(int(bg_width), int(bg_height)))
                 
                 # Position at bottom of screen
-                return caption_with_bg.set_position(('center', 'bottom'))
+                return caption_with_bg.set_position(('center', video_height - bg_height - 30))
         
         except Exception as e:
-            print(f"Caption creation failed: {str(e)}")
+            logger.error(f"Caption creation failed: {str(e)}")
             # Return None if we can't create the caption
             return None
     
@@ -225,6 +336,7 @@ class VideoEditor(VideoClipper):
             VideoProcessingError: If clip creation fails
         """
         try:
+            logger.info(f"Creating clip with {len(segments)} segments")
             video = self._load_video()
             output_path = validate_output_path(output_path)
 
@@ -270,18 +382,16 @@ class VideoEditor(VideoClipper):
                         try:
                             # Get video dimensions
                             video_size = (subclip.w, subclip.h)
+                            logger.info(f"Adding captions to segment {start}-{end}")
                             
                             # Auto-generate keywords if not provided
                             if highlight_keywords is None:
-                                # Extract important words (nouns, verbs, adjectives)
-                                words = segment.text.split()
-                                # Words with 4+ characters that aren't common stopwords
-                                stopwords = {'the', 'and', 'that', 'this', 'with', 'for', 'from', 'but'}
-                                potential_keywords = [w for w in words if len(w) >= 4 and w.lower() not in stopwords]
-                                # Select up to 3 words to highlight
-                                segment_keywords = potential_keywords[:3] if potential_keywords else []
+                                # Extract important words from the text
+                                segment_keywords = self._extract_keywords(segment.text)
+                                logger.info(f"Auto-extracted keywords: {segment_keywords}")
                             else:
                                 segment_keywords = highlight_keywords
+                                logger.info(f"Using provided keywords: {segment_keywords}")
                             
                             # Create caption clip
                             caption_clip = self._create_caption_clip(
@@ -292,14 +402,26 @@ class VideoEditor(VideoClipper):
                             )
                             
                             if caption_clip:
+                                logger.info("Caption clip created successfully")
                                 # Composite the caption with the video
-                                subclip = CompositeVideoClip([
-                                    subclip, 
-                                    caption_clip
-                                ], size=(subclip.w, subclip.h))
+                                try:
+                                    subclip = CompositeVideoClip([
+                                        subclip, 
+                                        caption_clip
+                                    ], size=(subclip.w, subclip.h))
+                                    logger.info("Caption composited with video")
+                                except Exception as e:
+                                    logger.error(f"Failed to composite caption: {e}")
+                            else:
+                                logger.warning("Failed to create caption clip - returned None")
                         except Exception as e:
                             # If caption fails, just use the original clip
-                            print(f"Caption addition failed: {str(e)}")
+                            logger.error(f"Caption addition failed: {str(e)}")
+                    else:
+                        if not hasattr(segment, 'text') or not segment.text:
+                            logger.warning(f"Segment at {start}-{end} has no text for captions")
+                        elif not add_captions:
+                            logger.info("Captions disabled")
                     
                     subclips.append(subclip)
 
@@ -307,9 +429,11 @@ class VideoEditor(VideoClipper):
                 raise VideoProcessingError("No valid subclips could be created")
 
             # Concatenate the subclips
+            logger.info(f"Concatenating {len(subclips)} subclips")
             final_clip = concatenate_videoclips(subclips)
             
             # Write the final clip to file with higher quality
+            logger.info(f"Writing final clip to {output_path}")
             final_clip.write_videofile(
                 output_path,
                 codec="libx264",
@@ -323,6 +447,7 @@ class VideoEditor(VideoClipper):
             )
 
             clip_duration = final_clip.duration
+            logger.info(f"Clip creation complete, duration: {clip_duration}s")
 
             # Clean up
             final_clip.close()
@@ -332,6 +457,7 @@ class VideoEditor(VideoClipper):
             return output_path, clip_duration
 
         except Exception as e:
+            logger.error(f"Failed to create clip: {e}")
             raise VideoProcessingError(f"Failed to create clip: {e}")
 
     def create_highlight_clip(
