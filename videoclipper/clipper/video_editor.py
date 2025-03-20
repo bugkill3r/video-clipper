@@ -74,23 +74,9 @@ class VideoEditor(VideoClipper):
             # Define caption style parameters
             font_size = max(24, int(video_height * 0.07))  # Scale with video height
             
-            # Try to find a suitable font that exists
-            available_fonts = ["Arial-Bold", "Arial", "Helvetica-Bold", "Helvetica", "DejaVuSans-Bold", "DejaVuSans"]
+            # Set a default font - use a very common font or None
             font = None
-            
-            for test_font in available_fonts:
-                try:
-                    # Test font by creating a small TextClip
-                    test_clip = TextClip("Test", font=test_font, fontsize=12)
-                    test_clip.close()
-                    font = test_font
-                    break
-                except Exception:
-                    continue
-                    
-            # Default to None if no font works (will use default system font)
-            if font is None:
-                print("Warning: Could not find a suitable font, using system default")
+            print("Using default system font")
             
             # Use enhanced styled text with colored words
             if highlight_words and len(highlight_words) > 0:
@@ -124,26 +110,32 @@ class VideoEditor(VideoClipper):
                         fontweight = 'normal'
                     
                     # Create text clip for this word
-                    word_clip = TextClip(
-                        word + " ",  # Add space after word
-                        fontsize=font_size,
-                        color=color,
-                        font=font,
-                        stroke_color='black',
-                        stroke_width=1.5,
-                        method='label'
-                    ).set_duration(duration)
+                    word_clip_args = {
+                        'txt': word + " ",  # Add space after word
+                        'fontsize': font_size,
+                        'color': color,
+                        'stroke_color': 'black',
+                        'stroke_width': 1.5,
+                        'method': 'label'
+                    }
+                    
+                    # Don't add font parameter at all, use system default
+                        
+                    word_clip = TextClip(**word_clip_args).set_duration(duration)
                     
                     # Add shadow effect for better visibility
                     if is_highlight:
-                        shadow = TextClip(
-                            word + " ",
-                            fontsize=font_size,
-                            color='black',
-                            font=font,
-                            stroke_width=0,
-                            method='label'
-                        ).set_duration(duration)
+                        shadow_args = {
+                            'txt': word + " ",
+                            'fontsize': font_size,
+                            'color': 'black',
+                            'stroke_width': 0,
+                            'method': 'label'
+                        }
+                        
+                        # Don't add font parameter at all, use system default
+                            
+                        shadow = TextClip(**shadow_args).set_duration(duration)
                         
                         # Shift shadow slightly
                         shadow = shadow.set_position((2, 2))
@@ -189,17 +181,21 @@ class VideoEditor(VideoClipper):
             
             else:
                 # Simpler version without individual word highlighting
-                caption_clip = TextClip(
-                    text,
-                    fontsize=font_size,
-                    color='white',
-                    font=font,
-                    stroke_color='black',
-                    stroke_width=1.5,
-                    method='label',
-                    size=(int(video_width * 0.9), None),
-                    align='center'
-                ).set_duration(duration)
+                # Use a dictionary for kwargs to avoid duplicate arguments
+                text_clip_args = {
+                    'txt': text,
+                    'fontsize': font_size,
+                    'color': 'white',
+                    'stroke_color': 'black',
+                    'stroke_width': 1.5,
+                    'method': 'label',
+                    'size': (int(video_width * 0.9), None),
+                    'align': 'center'
+                }
+                
+                # Don't add font parameter at all, use system default
+                    
+                caption_clip = TextClip(**text_clip_args).set_duration(duration)
                 
                 # Create semi-transparent background
                 bg_width = caption_clip.w + 40
@@ -290,8 +286,11 @@ class VideoEditor(VideoClipper):
                     # Add captions if requested and segment has text
                     if add_captions and hasattr(segment, 'text') and segment.text:
                         try:
+                            print(f"\n=== CAPTION PROCESSING ===")
                             print(f"Adding captions to segment {segment.start:.1f}-{segment.end:.1f}")
                             print(f"Caption text: '{segment.text}'")
+                            print(f"Segment has text attribute: {hasattr(segment, 'text')}")
+                            print(f"Text value: {segment.text}")
                             
                             # Get video dimensions
                             video_size = (subclip.w, subclip.h)
@@ -312,6 +311,7 @@ class VideoEditor(VideoClipper):
                                 print(f"Using provided keywords: {segment_keywords}")
                             
                             # Create caption clip
+                            print("Creating caption clip...")
                             caption_clip = self._create_caption_clip(
                                 segment.text, 
                                 subclip.duration,
@@ -321,16 +321,23 @@ class VideoEditor(VideoClipper):
                             
                             if caption_clip:
                                 print("Caption clip created successfully")
+                                print(f"Caption clip size: {caption_clip.w}x{caption_clip.h}")
+                                print(f"Caption duration: {caption_clip.duration}")
+                                
                                 # Composite the caption with the video
                                 try:
+                                    print("Compositing caption with video...")
                                     subclip = CompositeVideoClip([
                                         subclip, 
                                         caption_clip
                                     ], size=(subclip.w, subclip.h))
+                                    print("Composite successful!")
                                 except Exception as e:
                                     print(f"Failed to composite caption: {e}")
+                                    import traceback
+                                    print(traceback.format_exc())
                             else:
-                                print("Failed to create caption clip")
+                                print("Failed to create caption clip - returned None")
                         except Exception as e:
                             # If caption fails, just use the original clip
                             print(f"Caption addition failed: {str(e)}")

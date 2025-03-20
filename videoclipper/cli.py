@@ -166,19 +166,49 @@ def process(
                     
                     # Check if ffmpeg is installed for audio extraction
                     try:
-                        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
-                    except (subprocess.SubprocessError, FileNotFoundError):
-                        console.print("[yellow]ffmpeg not found, which is required for transcription[/yellow]")
-                        raise RuntimeError("ffmpeg not found, which is required for transcription")
+                        # Try different possible ffmpeg paths
+                        ffmpeg_cmd = "ffmpeg"
+                        ffmpeg_paths = [
+                            "ffmpeg",
+                            "/opt/homebrew/bin/ffmpeg",  # Homebrew on Apple Silicon
+                            "/usr/local/bin/ffmpeg",     # Homebrew on Intel Mac
+                            "/usr/bin/ffmpeg"            # System path
+                        ]
+                        
+                        for path in ffmpeg_paths:
+                            try:
+                                subprocess.run([path, "-version"], capture_output=True, check=True)
+                                ffmpeg_cmd = path
+                                console.print(f"[green]Found ffmpeg at: {path}[/green]")
+                                break
+                            except (subprocess.SubprocessError, FileNotFoundError):
+                                continue
+                        else:
+                            # If the loop completes without a break, ffmpeg was not found
+                            console.print("[yellow]ffmpeg not found, which is required for transcription[/yellow]")
+                            console.print("[yellow]Please install ffmpeg using 'brew install ffmpeg'[/yellow]")
+                            raise RuntimeError("ffmpeg not found, which is required for transcription")
+                    except Exception as e:
+                        console.print(f"[yellow]Error checking ffmpeg: {e}[/yellow]")
+                        raise RuntimeError(f"Error checking ffmpeg: {e}")
                     
                     console.print(f"[cyan]Transcribing audio with Whisper ({whisper_model} model)...[/cyan]")
                     
                     # Extract audio to a temporary file
                     temp_audio = os.path.join(os.path.dirname(video_path), "temp_audio.wav")
-                    extract_cmd = ["ffmpeg", "-i", video_path, "-q:a", "0", "-map", "a", temp_audio, "-y"]
+                    extract_cmd = [ffmpeg_cmd, "-i", video_path, "-q:a", "0", "-map", "a", temp_audio, "-y"]
                     
                     console.print(f"[cyan]Extracting audio to {temp_audio}...[/cyan]")
-                    subprocess.run(extract_cmd, capture_output=True, check=True)
+                    try:
+                        subprocess.run(extract_cmd, capture_output=True, check=True)
+                        if os.path.exists(temp_audio):
+                            console.print(f"[green]Audio extracted successfully to {temp_audio}[/green]")
+                        else:
+                            console.print(f"[yellow]Audio extraction failed - output file not found[/yellow]")
+                            raise FileNotFoundError(f"Audio file not found: {temp_audio}")
+                    except Exception as e:
+                        console.print(f"[yellow]Audio extraction failed: {e}[/yellow]")
+                        raise RuntimeError(f"Audio extraction failed: {e}")
                     
                     # Transcribe from the audio file
                     transcriber = WhisperTranscriber(temp_audio)
@@ -283,6 +313,13 @@ def process(
                 processed_segments = segments
             
             clip_files = []
+            
+            # Process highlight words if provided
+            highlight_keywords = None
+            if highlight_words:
+                highlight_keywords = [word.strip() for word in highlight_words.split(',')]
+                console.print(f"[cyan]Using highlight keywords: {highlight_keywords}[/cyan]")
+            
             if num_clips == 1:
                 try:
                     # For a single clip, just use all processed segments with improved selection
@@ -300,11 +337,6 @@ def process(
                 clip_name = "highlight_1.mp4"
                 clip_path = os.path.join(output_dir, clip_name)
                 
-                # Process highlight words if provided
-                highlight_keywords = None
-                if highlight_words:
-                    highlight_keywords = [word.strip() for word in highlight_words.split(',')]
-                
                 try:
                     # Create the highlight clip with viral style and captions
                     output_path, clip_duration = video_editor.create_clip(
@@ -319,6 +351,8 @@ def process(
                     console.print(f"[green]Created clip 1/1 ({clip_duration:.1f}s)[/green]")
                 except Exception as e:
                     console.print(f"[red]Failed to create clip: {e}[/red]")
+                    import traceback
+                    console.print(f"[dim]{traceback.format_exc()}[/dim]")
                 
                 progress.update(task3, advance=1)
             else:
@@ -381,6 +415,8 @@ def process(
                         console.print(f"[green]Created clip {i+1}/{num_clips} ({clip_duration:.1f}s)[/green]")
                     except Exception as e:
                         console.print(f"[red]Failed to create clip {i+1}: {e}[/red]")
+                        import traceback
+                        console.print(f"[dim]{traceback.format_exc()}[/dim]")
                     
                     progress.update(task3, advance=1)
                     
