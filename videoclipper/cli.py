@@ -156,13 +156,40 @@ def process(
             if transcribe or captions:
                 try:
                     from videoclipper.transcriber.whisper_transcriber import WhisperTranscriber
+                    import os
+                    
+                    # Check if the video file exists
+                    if not os.path.exists(video_path):
+                        console.print(f"[yellow]Video file not found: {video_path}[/yellow]")
+                        raise FileNotFoundError(f"Video file not found: {video_path}")
+                    
+                    # Check if ffmpeg is installed for audio extraction
+                    import subprocess
+                    try:
+                        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
+                    except (subprocess.SubprocessError, FileNotFoundError):
+                        console.print("[yellow]ffmpeg not found, which is required for transcription[/yellow]")
+                        raise RuntimeError("ffmpeg not found, which is required for transcription")
                     
                     console.print(f"[cyan]Transcribing audio with Whisper ({whisper_model} model)...[/cyan]")
-                    transcriber = WhisperTranscriber(video_path)
+                    
+                    # Extract audio to a temporary file
+                    temp_audio = os.path.join(os.path.dirname(video_path), "temp_audio.wav")
+                    extract_cmd = ["ffmpeg", "-i", video_path, "-q:a", "0", "-map", "a", temp_audio, "-y"]
+                    
+                    console.print(f"[cyan]Extracting audio to {temp_audio}...[/cyan]")
+                    subprocess.run(extract_cmd, capture_output=True, check=True)
+                    
+                    # Transcribe from the audio file
+                    transcriber = WhisperTranscriber(temp_audio)
                     speech_segments = transcriber.transcribe(
                         model_size=whisper_model,
                         min_segment_length=3.0  # Longer segments for better captions
                     )
+                    
+                    # Clean up temp file
+                    if os.path.exists(temp_audio):
+                        os.remove(temp_audio)
                     
                     if speech_segments:
                         console.print(f"[green]Found {len(speech_segments)} speech segments[/green]")
@@ -171,8 +198,12 @@ def process(
                             # Boost score for segments with text for better selection
                             segment.score = min(1.0, segment.score * 1.2)
                             segments.append(segment)
+                            console.print(f"[dim]Segment {segment.start:.1f}-{segment.end:.1f}: {segment.text}[/dim]")
                 except Exception as e:
-                    console.print(f"[yellow]Transcription failed: {e}, continuing without captions[/yellow]")
+                    import traceback
+                    console.print(f"[yellow]Transcription failed: {e}[/yellow]")
+                    console.print(f"[dim]{traceback.format_exc()}[/dim]")
+                    console.print("[yellow]Continuing without captions[/yellow]")
             
             # Detect scene changes
             try:

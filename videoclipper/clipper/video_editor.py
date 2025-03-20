@@ -63,100 +63,164 @@ class VideoEditor(VideoClipper):
         try:
             if not text:
                 return None
+
+            # Import inside method to avoid dependency issues
+            from moviepy.video.VideoClip import TextClip, ColorClip
+            from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
+            import numpy as np
                 
             video_width, video_height = video_size
             
             # Define caption style parameters
             font_size = max(24, int(video_height * 0.07))  # Scale with video height
-            font = "Arial-Bold"
-            stroke_width = 1.5
             
-            # Define gradient highlight colors (based on Opus style in the image)
-            gradient_colors = [
-                "#FF5252",  # Red
-                "#FF9D50",  # Orange
-                "#FFD54F",  # Yellow
-                "#4CAF50",  # Green
-                "#2196F3",  # Blue
-                "#9C27B0",  # Purple
-                "#FF4081",  # Pink
-            ]
+            # Try to find a suitable font that exists
+            available_fonts = ["Arial-Bold", "Arial", "Helvetica-Bold", "Helvetica", "DejaVuSans-Bold", "DejaVuSans"]
+            font = None
             
-            # Prepare the text with highlights
+            for test_font in available_fonts:
+                try:
+                    # Test font by creating a small TextClip
+                    test_clip = TextClip("Test", font=test_font, fontsize=12)
+                    test_clip.close()
+                    font = test_font
+                    break
+                except Exception:
+                    continue
+                    
+            # Default to None if no font works (will use default system font)
+            if font is None:
+                print("Warning: Could not find a suitable font, using system default")
+            
+            # Use enhanced styled text with colored words
             if highlight_words and len(highlight_words) > 0:
+                # Create individual clips for each word with different colors for highlights
+                word_clips = []
                 words = text.split()
-                styled_words = []
+                x_pos = 0
+                word_height = 0
+                
+                # Choose high-contrast colors for highlights
+                highlight_colors = [
+                    (255, 82, 82),    # Red
+                    (255, 157, 80),   # Orange
+                    (255, 213, 79),   # Yellow
+                    (76, 175, 80),    # Green
+                    (33, 150, 243),   # Blue
+                    (156, 39, 176),   # Purple
+                    (255, 64, 129)    # Pink
+                ]
                 
                 for word in words:
                     word_clean = word.lower().strip(".,!?;:'\"()-")
-                    if any(word_clean == hw.lower() for hw in highlight_words):
-                        # Choose a random highlight color
-                        color = random.choice(gradient_colors)
-                        styled_words.append(f'<span foreground="{color}" weight="heavy">{word}</span>')
+                    is_highlight = any(word_clean == hw.lower() for hw in highlight_words)
+                    
+                    # Choose color based on highlight status
+                    if is_highlight:
+                        color = random.choice(highlight_colors)
+                        fontweight = 'bold'
                     else:
-                        styled_words.append(word)
+                        color = 'white'
+                        fontweight = 'normal'
+                    
+                    # Create text clip for this word
+                    word_clip = TextClip(
+                        word + " ",  # Add space after word
+                        fontsize=font_size,
+                        color=color,
+                        font=font,
+                        stroke_color='black',
+                        stroke_width=1.5,
+                        method='label'
+                    ).set_duration(duration)
+                    
+                    # Add shadow effect for better visibility
+                    if is_highlight:
+                        shadow = TextClip(
+                            word + " ",
+                            fontsize=font_size,
+                            color='black',
+                            font=font,
+                            stroke_width=0,
+                            method='label'
+                        ).set_duration(duration)
                         
-                markup_text = ' '.join(styled_words)
-                # Fallback if markup doesn't work
-                pango_enabled = True
-            else:
-                markup_text = text
-                pango_enabled = False
+                        # Shift shadow slightly
+                        shadow = shadow.set_position((2, 2))
+                        word_clip = CompositeVideoClip([shadow, word_clip])
+                    
+                    word_clips.append(word_clip)
+                
+                # Create background with certain opacity
+                bg_color = (0, 0, 0)
+                bg_opacity = 0.7
+                
+                # Calculate total width and height needed
+                total_width = sum(clip.w for clip in word_clips)
+                max_height = max(clip.h for clip in word_clips)
+                
+                # Create a background clip
+                bg_width = min(video_width * 0.95, total_width + 40)  # Add padding
+                bg_height = max_height + 20  # Add padding
+                
+                bg = ColorClip(
+                    size=(int(bg_width), int(bg_height)),
+                    color=bg_color
+                ).set_opacity(bg_opacity).set_duration(duration)
+                
+                # Position word clips on the background
+                positioned_clips = [bg]
+                x_offset = (bg_width - total_width) / 2  # Center text horizontally
+                
+                for word_clip in word_clips:
+                    word_clip = word_clip.set_position((x_offset, 10))  # 10px from top
+                    x_offset += word_clip.w
+                    positioned_clips.append(word_clip)
+                
+                # Composite all clips
+                caption_clip = CompositeVideoClip(
+                    positioned_clips,
+                    size=(int(bg_width), int(bg_height))
+                ).set_duration(duration)
+                
+                # Position at bottom of screen
+                caption_clip = caption_clip.set_position(('center', 'bottom'))
+                return caption_clip
             
-            try:
-                # Create caption with Pango markup for highlights
-                caption_clip = TextClip(
-                    markup_text,
-                    font=font,
-                    fontsize=font_size,
-                    color='white',
-                    stroke_color='black',
-                    stroke_width=stroke_width,
-                    method='pango' if pango_enabled else 'label',
-                    size=(video_width * 0.9, None),  # 90% of video width, auto height
-                    align='center'
-                )
-            except Exception:
-                # Fallback without markup
+            else:
+                # Simpler version without individual word highlighting
                 caption_clip = TextClip(
                     text,
-                    font=font,
                     fontsize=font_size,
                     color='white',
+                    font=font,
                     stroke_color='black',
-                    stroke_width=stroke_width,
+                    stroke_width=1.5,
                     method='label',
-                    size=(video_width * 0.9, None),
+                    size=(int(video_width * 0.9), None),
                     align='center'
-                )
-            
-            # Set duration and position
-            caption_clip = caption_clip.set_duration(duration)
-            
-            # Add caption background for better visibility
-            try:
-                # Semi-transparent background
-                bg_height = caption_clip.h + 20  # Add padding
-                bg_width = caption_clip.w + 40
+                ).set_duration(duration)
                 
-                bg_clip = ColorClip(
-                    size=(bg_width, bg_height),
-                    color=(0, 0, 0, 0.5),  # Semi-transparent black
-                    duration=duration
-                )
+                # Create semi-transparent background
+                bg_width = caption_clip.w + 40
+                bg_height = caption_clip.h + 20
+                
+                bg = ColorClip(
+                    size=(int(bg_width), int(bg_height)),
+                    color=(0, 0, 0)
+                ).set_opacity(0.7).set_duration(duration)
                 
                 # Composite with background
                 caption_with_bg = CompositeVideoClip([
-                    bg_clip,
+                    bg,
                     caption_clip.set_position(('center', 'center'))
-                ])
+                ], size=(int(bg_width), int(bg_height)))
                 
+                # Position at bottom of screen
                 return caption_with_bg.set_position(('center', 'bottom'))
-            except Exception:
-                # Fallback without background
-                return caption_clip.set_position(('center', 'bottom'))
         
-        except Exception:
+        except Exception as e:
+            print(f"Caption creation failed: {str(e)}")
             # Return None if we can't create the caption
             return None
     
@@ -226,8 +290,12 @@ class VideoEditor(VideoClipper):
                     # Add captions if requested and segment has text
                     if add_captions and hasattr(segment, 'text') and segment.text:
                         try:
+                            print(f"Adding captions to segment {segment.start:.1f}-{segment.end:.1f}")
+                            print(f"Caption text: '{segment.text}'")
+                            
                             # Get video dimensions
                             video_size = (subclip.w, subclip.h)
+                            print(f"Video dimensions: {video_size}")
                             
                             # Auto-generate keywords if not provided
                             if highlight_keywords is None:
@@ -238,8 +306,10 @@ class VideoEditor(VideoClipper):
                                 potential_keywords = [w for w in words if len(w) >= 4 and w.lower() not in stopwords]
                                 # Select up to 3 words to highlight
                                 segment_keywords = potential_keywords[:3] if potential_keywords else []
+                                print(f"Auto-generated keywords: {segment_keywords}")
                             else:
                                 segment_keywords = highlight_keywords
+                                print(f"Using provided keywords: {segment_keywords}")
                             
                             # Create caption clip
                             caption_clip = self._create_caption_clip(
@@ -250,14 +320,19 @@ class VideoEditor(VideoClipper):
                             )
                             
                             if caption_clip:
+                                print("Caption clip created successfully")
                                 # Composite the caption with the video
                                 subclip = CompositeVideoClip([
                                     subclip, 
                                     caption_clip
                                 ])
-                        except Exception:
+                            else:
+                                print("Failed to create caption clip")
+                        except Exception as e:
                             # If caption fails, just use the original clip
-                            pass
+                            print(f"Caption addition failed: {str(e)}")
+                            import traceback
+                            print(traceback.format_exc())
                     
                     subclips.append(subclip)
 
