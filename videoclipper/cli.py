@@ -71,7 +71,7 @@ def main():
 )
 @click.option(
     "--captions/--no-captions",
-    default=True,
+    default=False,
     help="Add colorful captions to the clips (requires transcription).",
 )
 @click.option(

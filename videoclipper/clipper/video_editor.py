@@ -3,6 +3,7 @@
 from typing import List, Optional, Tuple
 import random
 import logging
+import re
 import numpy as np
 
 from moviepy import VideoFileClip, concatenate_videoclips
@@ -93,6 +94,74 @@ class VideoEditor(VideoClipper):
                     break
                     
         return unique_keywords
+    
+    def _split_text_into_chunks(self, text: str, max_chunk_length: int = 60) -> List[str]:
+        """Splits text into smaller chunks for better caption timing and readability.
+        
+        Args:
+            text: The text to split into chunks
+            max_chunk_length: Maximum length of each chunk in characters
+            
+        Returns:
+            List of text chunks
+        """
+        if not text:
+            return []
+        
+        # First, try to split by sentence
+        sentences = []
+        # Match sentence boundaries (period, question mark, exclamation point followed by space)
+        for sentence in re.split(r'[.!?]\s+', text):
+            if sentence:
+                sentences.append(sentence.strip())
+        
+        # If no sentence boundaries, or very short text, return as single chunk
+        if len(sentences) <= 1 or len(text) < max_chunk_length:
+            # Check if the single sentence is too long
+            if len(text) > max_chunk_length:
+                # Split by commas or natural pauses
+                clauses = []
+                for clause in re.split(r'[,;:]\s+', text):
+                    if clause:
+                        clauses.append(clause.strip())
+                
+                # If we have multiple clauses, use them
+                if len(clauses) > 1:
+                    return clauses
+                
+                # If still too long, just split by character count
+                if len(text) > max_chunk_length:
+                    chunks = []
+                    for i in range(0, len(text), max_chunk_length):
+                        chunk = text[i:i+max_chunk_length].strip()
+                        if chunk:
+                            chunks.append(chunk)
+                    return chunks
+            
+            # If text is short enough or can't be split, return as is
+            return [text]
+        
+        # If we have multiple sentences, merge short ones to avoid too many tiny captions
+        chunks = []
+        current_chunk = ""
+        
+        for sentence in sentences:
+            # If adding this sentence would make the chunk too long, start a new chunk
+            if len(current_chunk) + len(sentence) + 1 > max_chunk_length and current_chunk:
+                chunks.append(current_chunk)
+                current_chunk = sentence
+            else:
+                # Add to current chunk with a space if needed
+                if current_chunk:
+                    current_chunk += " " + sentence
+                else:
+                    current_chunk = sentence
+        
+        # Add the last chunk if any
+        if current_chunk:
+            chunks.append(current_chunk)
+        
+        return chunks
 
     def _create_caption_clip(self, text: str, duration: float, video_size: Tuple[int, int], 
                         highlight_words: Optional[List[str]] = None) -> TextClip:
@@ -118,19 +187,12 @@ class VideoEditor(VideoClipper):
             video_width, video_height = video_size
             
             # Define caption style parameters - larger font for better visibility
-            font_size = max(36, int(video_height * 0.1))  # Increased font size further
-            
-            # Set a default font - use system default
-            font = None
+            font_size = max(36, int(video_height * 0.05))
             
             # If no highlight words provided, extract them automatically
             if not highlight_words or len(highlight_words) == 0:
                 highlight_words = self._extract_keywords(text)
                 logger.info(f"Auto-extracted keywords: {highlight_words}")
-            
-            # Match the style from the example screenshot
-            # Use a simpler, more visible approach like in the example
-            text_with_highlights = text
             
             # Define a gradient-like set of colors for an eye-catching look
             text_colors = [
@@ -154,44 +216,88 @@ class VideoEditor(VideoClipper):
             else:
                 text_color = text_colors[3]  # Red-Orange for later segments
             
-            # Create a simple text clip with thick outlines - matches the example style
-            text_clip_args = {
-                'txt': text,
-                'fontsize': font_size,
-                'color': text_color,
-                'stroke_color': 'black',
-                'stroke_width': 3.0,  # Thicker stroke for better visibility
-                'method': 'label',
-                'align': 'center'
-            }
+            # Highlight specified words by creating individual clips for each word
+            # Convert to lowercase for case-insensitive comparison
+            highlight_words_lower = [word.lower() for word in highlight_words]
             
-            caption_clip = TextClip(**text_clip_args).set_duration(duration)
+            # Try creating the text clip with correct parameters for MoviePy 2.1.1/2.1.2
+            try:
+                # In MoviePy 2.1.1/2.1.2, font is the first required parameter
+                caption_clip = TextClip(
+                    font='Arial',
+                    text=text,
+                    font_size=font_size,
+                    color=text_color,
+                    stroke_color='black',
+                    stroke_width=2,
+                    method='label'
+                )
+                # Set duration using with_duration instead of set_duration
+                caption_clip = caption_clip.with_duration(duration)
+                logger.info("Created styled caption with parameters")
+            except Exception as e:
+                logger.error(f"Failed to create styled caption: {e}")
+                
+                # Fallback to simpler caption with just basic parameters
+                try:
+                    caption_clip = TextClip(
+                        font='Arial',
+                        text=text,
+                        font_size=font_size,
+                        color=text_color
+                    )
+                    caption_clip = caption_clip.with_duration(duration)
+                    logger.info("Created basic caption with minimal parameters")
+                except Exception as e2:
+                    logger.error(f"Failed to create basic caption: {e2}")
+                    
+                    # Last-resort fallback with absolute minimal parameters
+                    try:
+                        # Try with system font path as last resort
+                        caption_clip = TextClip(
+                            font='/System/Library/Fonts/Helvetica.ttc',
+                            text=text,
+                            font_size=font_size
+                        )
+                        caption_clip = caption_clip.with_duration(duration)
+                        logger.info("Created minimal caption with system font")
+                    except Exception as e3:
+                        logger.error(f"All caption creation attempts failed: {e3}")
+                        return None
             
-            # Create a dark semi-transparent background with rounded corners appearance
-            margin = int(font_size * 0.7)  # Margin around text
-            bg_width = min(video_width * 0.95, caption_clip.w + margin * 2)
-            bg_height = caption_clip.h + margin
+            # Create a dark semi-transparent background
+            try:
+                margin = int(font_size * 0.7)  # Margin around text
+                bg_width = min(video_width * 0.95, caption_clip.w + margin * 2)
+                bg_height = caption_clip.h + margin
+                
+                # Create dark background (use a solid color with opacity)
+                bg = ColorClip(
+                    size=(int(bg_width), int(bg_height)),
+                    color=(0, 0, 0),
+                    duration=duration
+                )
+                # Set opacity for semi-transparency
+                bg = bg.with_opacity(0.8)
+                
+                # Position text on background
+                text_on_bg = CompositeVideoClip([
+                    bg,
+                    caption_clip.with_position(('center', 'center'))
+                ], size=(int(bg_width), int(bg_height)))
+                
+                caption_clip = text_on_bg
+                logger.info("Added background to caption")
+            except Exception as bg_error:
+                logger.warning(f"Could not create background: {bg_error}")
             
-            # Create background with high contrast
-            bg = ColorClip(
-                size=(int(bg_width), int(bg_height)),
-                color=(0, 0, 0)
-            ).set_opacity(0.85).set_duration(duration)  # Higher opacity for better readability
-            
-            # Position text on background
-            text_on_bg = CompositeVideoClip([
-                bg,
-                caption_clip.set_position(('center', 'center'))
-            ], size=(int(bg_width), int(bg_height)))
-            
-            # Position captions similar to example - prominently in lower part
-            # But not too close to the bottom (avoid device UI elements)
-            position_y = video_height - bg_height - int(video_height * 0.1)
+            # Position captions in the lower part of the video
+            position_y = video_height - caption_clip.h - int(video_height * 0.1)
             
             # Apply final positioning
-            final_caption = text_on_bg.set_position(('center', position_y))
+            final_caption = caption_clip.with_position(('center', position_y))
             
-            logger.info(f"Created caption clip with size {bg_width}x{bg_height}")
+            logger.info(f"Created caption clip with size {caption_clip.w}x{caption_clip.h}")
             return final_caption
             
         except Exception as e:
@@ -270,36 +376,79 @@ class VideoEditor(VideoClipper):
                             video_size = (subclip.w, subclip.h)
                             logger.info(f"Adding captions to segment {start}-{end}")
                             
-                            # Auto-generate keywords if not provided
-                            if highlight_keywords is None:
-                                # Extract important words from the text
-                                segment_keywords = self._extract_keywords(segment.text)
-                                logger.info(f"Auto-extracted keywords: {segment_keywords}")
+                            # For longer segments, split text into smaller chunks for better readability
+                            if subclip.duration > 6.0 and len(segment.text) > 70:
+                                # Split text into sentences or phrases
+                                chunks = self._split_text_into_chunks(segment.text)
+                                logger.info(f"Split text into {len(chunks)} chunks for more readable captions")
+                                
+                                caption_clips = []
+                                chunk_duration = subclip.duration / len(chunks)
+                                
+                                for i, chunk_text in enumerate(chunks):
+                                    # Auto-generate keywords for each chunk if not provided
+                                    if highlight_keywords is None:
+                                        chunk_keywords = self._extract_keywords(chunk_text)
+                                    else:
+                                        chunk_keywords = highlight_keywords
+                                    
+                                    # Calculate start time for this chunk within the subclip
+                                    chunk_start = i * chunk_duration
+                                    
+                                    # Create caption clip for this chunk
+                                    caption = self._create_caption_clip(
+                                        chunk_text,
+                                        chunk_duration,
+                                        video_size,
+                                        chunk_keywords
+                                    )
+                                    
+                                    if caption:
+                                        # Start this caption at the calculated time
+                                        caption = caption.with_start(chunk_start)
+                                        caption_clips.append(caption)
+                                        logger.info(f"Created caption for chunk {i+1}/{len(chunks)}")
+                                
+                                if caption_clips:
+                                    # Composite all caption chunks with the video
+                                    try:
+                                        all_clips = [subclip] + caption_clips
+                                        subclip = CompositeVideoClip(all_clips, size=(subclip.w, subclip.h))
+                                        logger.info(f"Composited {len(caption_clips)} caption chunks with video")
+                                    except Exception as e:
+                                        logger.error(f"Failed to composite caption chunks: {e}")
+                                
                             else:
-                                segment_keywords = highlight_keywords
-                                logger.info(f"Using provided keywords: {segment_keywords}")
-                            
-                            # Create caption clip
-                            caption_clip = self._create_caption_clip(
-                                segment.text, 
-                                subclip.duration,
-                                video_size,
-                                segment_keywords
-                            )
-                            
-                            if caption_clip:
-                                logger.info("Caption clip created successfully")
-                                # Composite the caption with the video
-                                try:
-                                    subclip = CompositeVideoClip([
-                                        subclip, 
-                                        caption_clip
-                                    ], size=(subclip.w, subclip.h))
-                                    logger.info("Caption composited with video")
-                                except Exception as e:
-                                    logger.error(f"Failed to composite caption: {e}")
-                            else:
-                                logger.warning("Failed to create caption clip - returned None")
+                                # For shorter segments, use a single caption
+                                # Auto-generate keywords if not provided
+                                if highlight_keywords is None:
+                                    segment_keywords = self._extract_keywords(segment.text)
+                                    logger.info(f"Auto-extracted keywords: {segment_keywords}")
+                                else:
+                                    segment_keywords = highlight_keywords
+                                    logger.info(f"Using provided keywords: {segment_keywords}")
+                                
+                                # Create a single caption clip
+                                caption_clip = self._create_caption_clip(
+                                    segment.text, 
+                                    subclip.duration,
+                                    video_size,
+                                    segment_keywords
+                                )
+                                
+                                if caption_clip:
+                                    logger.info("Caption clip created successfully")
+                                    # Composite the caption with the video
+                                    try:
+                                        subclip = CompositeVideoClip([
+                                            subclip, 
+                                            caption_clip
+                                        ], size=(subclip.w, subclip.h))
+                                        logger.info("Caption composited with video")
+                                    except Exception as e:
+                                        logger.error(f"Failed to composite caption: {e}")
+                                else:
+                                    logger.warning("Failed to create caption clip - returned None")
                         except Exception as e:
                             # If caption fails, just use the original clip
                             logger.error(f"Caption addition failed: {str(e)}")
