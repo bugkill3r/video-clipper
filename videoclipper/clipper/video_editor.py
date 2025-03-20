@@ -7,7 +7,7 @@ from moviepy import VideoFileClip, concatenate_videoclips
 from videoclipper.clipper.base import VideoClipper
 from videoclipper.clipper.segment_selector import SegmentSelector
 from videoclipper.exceptions import VideoProcessingError
-from videoclipper.models.segment import Segment
+from videoclipper.models.segment import Segment, SegmentType
 from videoclipper.utils.validation import validate_output_path
 
 

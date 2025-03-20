@@ -9,9 +9,10 @@ from rich.console import Console
 from rich.progress import Progress
 
 from videoclipper.clipper.video_editor import VideoEditor
+from videoclipper.clipper.segment_selector import SegmentSelector
 from videoclipper.analyzer.scene_detector import SceneDetector
 from videoclipper.exceptions import FileError, VideoClipperError
-from videoclipper.models.segment import Segment
+from videoclipper.models.segment import Segment, SegmentType
 from videoclipper.utils.file_utils import get_file_extension, ensure_directory
 from videoclipper.utils.youtube import download_youtube_video, is_youtube_url, get_video_id
 
