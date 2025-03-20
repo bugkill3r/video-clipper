@@ -134,11 +134,11 @@ MIT
 The video clipper now supports animated captions that synchronize with speech timing:
 
 - Captions are disabled by default and can be enabled with the `--captions` flag
-- Captions appear in short phrases (3-5 words) timed to match when words are spoken
-- Keywords are automatically identified and highlighted in yellow
+- Captions appear in short phrases (4-6 words) timed to match when words are spoken
+- Keywords are automatically identified and highlighted in alternating yellow/green
 - You can specify your own highlight words with the `--highlight-words` option
-- The style matches viral social media videos with bold text and keyword highlighting
-- Each caption animates subtly with fade-in effects and highlighted words get special emphasis
+- The style matches viral social media videos with a dark background and highlighted words
+- Word-by-word highlighting makes important terms stand out for viewers
 
 Example usage:
 ```bash
