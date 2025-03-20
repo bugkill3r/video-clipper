@@ -3,7 +3,6 @@
 from typing import List, Optional, Tuple
 import random
 import logging
-import nltk
 import numpy as np
 
 from moviepy import VideoFileClip, concatenate_videoclips
@@ -19,19 +18,14 @@ from videoclipper.utils.validation import validate_output_path
 # Set up logging
 logger = logging.getLogger(__name__)
 
-# Initialize NLTK for better keyword extraction
-try:
-    nltk.download('punkt', quiet=True)
-    nltk.download('stopwords', quiet=True)
-    from nltk.corpus import stopwords
-    from nltk.tokenize import word_tokenize
-    STOPWORDS = set(stopwords.words('english'))
-    NLTK_AVAILABLE = True
-except Exception:
-    logger.warning("NLTK modules not available, falling back to basic keyword extraction")
-    NLTK_AVAILABLE = False
-    STOPWORDS = {'the', 'and', 'that', 'this', 'with', 'for', 'from', 'but', 'not', 'are', 'was',
-                'were', 'have', 'has', 'had', 'you', 'your', 'they', 'their', 'our', 'is', 'it'}
+# Initialize stopwords for keyword extraction
+NLTK_AVAILABLE = False
+STOPWORDS = {'the', 'and', 'that', 'this', 'with', 'for', 'from', 'but', 'not', 'are', 'was',
+            'were', 'have', 'has', 'had', 'you', 'your', 'they', 'their', 'our', 'is', 'it', 
+            'a', 'an', 'i', 'me', 'my', 'we', 'us', 'what', 'who', 'how', 'when', 'where', 
+            'which', 'there', 'here', 'to', 'of', 'in', 'on', 'at', 'by', 'as', 'be', 'been',
+            'being', 'am', 'do', 'does', 'did', 'will', 'would', 'shall', 'should', 'can',
+            'could', 'may', 'might', 'must', 'ought'}
 
 
 class VideoEditor(VideoClipper):
@@ -81,19 +75,7 @@ class VideoEditor(VideoClipper):
         # Clean and normalize the text
         text = text.lower().strip()
         
-        if NLTK_AVAILABLE:
-            # Use NLTK for better extraction
-            try:
-                words = word_tokenize(text)
-                # Filter out stopwords and short words
-                keywords = [word for word in words 
-                          if word.isalpha() and word not in STOPWORDS and len(word) > 3]
-                # Take the most frequent/important words
-                return keywords[:max_keywords]
-            except Exception as e:
-                logger.warning(f"NLTK keyword extraction failed: {e}")
-        
-        # Fallback to basic extraction
+        # Basic extraction
         words = text.split()
         # Filter stopwords and short words
         keywords = [word.strip('.,!?;:"\'()[]{}') for word in words 
