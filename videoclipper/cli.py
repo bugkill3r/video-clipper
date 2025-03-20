@@ -177,9 +177,14 @@ def process(
             # Step 3: Generate highlight clips
             task3 = progress.add_task("[cyan]Generating highlights...", total=num_clips)
             
+            # Ensure video is loaded and get proper duration
+            video = video_editor._load_video()
+            video_duration = video.duration if video else 0
+            console.print(f"Video duration: {video_duration} seconds")
+            
             # Process segments using the improved segment selector
             selector = SegmentSelector(
-                video_duration=video_editor._duration or 0,
+                video_duration=video_duration,
                 min_segment_duration=min_segment,
                 max_segment_duration=max_segment,
             )

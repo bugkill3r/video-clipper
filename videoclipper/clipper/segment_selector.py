@@ -111,13 +111,14 @@ class SegmentSelector:
         
         # Try to include segments from different parts of the video
         video_duration = self.video_duration
-        num_zones = min(5, len(segments))  # Divide video into zones
-        zone_size = video_duration / num_zones
+        num_zones = min(5, max(1, len(segments)))  # Divide video into zones, ensure at least 1
+        zone_size = video_duration / max(1, num_zones)  # Prevent division by zero
         
         # Ensure we have at least one segment from each zone if possible
         zones_covered = set()
-        if selected_segments:
-            zones_covered.add(int(selected_segments[0].start / zone_size))
+        if selected_segments and zone_size > 0:
+            zone_index = min(int(selected_segments[0].start / zone_size), max(0, num_zones - 1))
+            zones_covered.add(zone_index)
         
         # For remaining segments, prioritize by zone and then by score
         for segment in segments_by_score[1:]:
@@ -125,7 +126,12 @@ class SegmentSelector:
             if total_duration + segment.duration > max_duration:
                 continue
                 
-            segment_zone = int(segment.start / zone_size)
+            # Calculate zone safely
+            if zone_size > 0:
+                zone_idx = int(segment.start / zone_size)
+                segment_zone = min(zone_idx, max(0, num_zones - 1))
+            else:
+                segment_zone = 0
             
             # Skip if too close to already selected segments
             too_close = False
