@@ -4,6 +4,8 @@ Command-line interface for VideoClipper.
 
 import os
 import time
+import traceback
+import subprocess
 import click
 from rich.console import Console
 from rich.progress import Progress
@@ -153,10 +155,9 @@ def process(
             speech_segments = []
             
             # Process transcription if enabled (needed for captions)
-            if transcribe or captions:
+            if (transcribe or captions) and False:  # Temporarily disable transcription for debugging
                 try:
                     from videoclipper.transcriber.whisper_transcriber import WhisperTranscriber
-                    import os
                     
                     # Check if the video file exists
                     if not os.path.exists(video_path):
@@ -164,7 +165,6 @@ def process(
                         raise FileNotFoundError(f"Video file not found: {video_path}")
                     
                     # Check if ffmpeg is installed for audio extraction
-                    import subprocess
                     try:
                         subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
                     except (subprocess.SubprocessError, FileNotFoundError):
@@ -275,16 +275,26 @@ def process(
             )
             
             # Process all segments once to filter, merge, etc.
-            processed_segments = selector.process_segments(segments)
+            try:
+                processed_segments = selector.process_segments(segments)
+            except Exception as e:
+                console.print(f"[yellow]Error processing segments: {e}[/yellow]")
+                console.print("[yellow]Using original segments[/yellow]")
+                processed_segments = segments
             
             clip_files = []
             if num_clips == 1:
-                # For a single clip, just use all processed segments with improved selection
-                selected_segments = selector.select_top_segments(
-                    processed_segments, 
-                    max_duration=duration,
-                    min_spacing=10.0  # Minimum 10s spacing to avoid repetitive content
-                )
+                try:
+                    # For a single clip, just use all processed segments with improved selection
+                    selected_segments = selector.select_top_segments(
+                        processed_segments, 
+                        max_duration=duration,
+                        min_spacing=10.0  # Minimum 10s spacing to avoid repetitive content
+                    )
+                except Exception as e:
+                    console.print(f"[yellow]Error selecting top segments: {e}[/yellow]")
+                    console.print("[yellow]Using all processed segments[/yellow]")
+                    selected_segments = sorted(processed_segments, key=lambda x: x.start)
                 
                 # Create the output path for this clip
                 clip_name = "highlight_1.mp4"
@@ -342,11 +352,16 @@ def process(
                     
                     # Select top segments for this clip
                     clip_duration = min(duration, max_segment)
-                    selected_segments = selector.select_top_segments(
-                        zone_segments, 
-                        max_duration=clip_duration,
-                        min_spacing=5.0  # Minimum 5s spacing
-                    )
+                    try:
+                        selected_segments = selector.select_top_segments(
+                            zone_segments, 
+                            max_duration=clip_duration,
+                            min_spacing=5.0  # Minimum 5s spacing
+                        )
+                    except Exception as e:
+                        console.print(f"[yellow]Error selecting top segments for clip {i+1}: {e}[/yellow]")
+                        console.print("[yellow]Using all zone segments[/yellow]")
+                        selected_segments = sorted(zone_segments, key=lambda x: x.start)
                     
                     # Create the output path for this clip
                     clip_name = f"highlight_{i+1}.mp4"

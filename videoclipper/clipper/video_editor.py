@@ -322,10 +322,13 @@ class VideoEditor(VideoClipper):
                             if caption_clip:
                                 print("Caption clip created successfully")
                                 # Composite the caption with the video
-                                subclip = CompositeVideoClip([
-                                    subclip, 
-                                    caption_clip
-                                ])
+                                try:
+                                    subclip = CompositeVideoClip([
+                                        subclip, 
+                                        caption_clip
+                                    ], size=(subclip.w, subclip.h))
+                                except Exception as e:
+                                    print(f"Failed to composite caption: {e}")
                             else:
                                 print("Failed to create caption clip")
                         except Exception as e:
