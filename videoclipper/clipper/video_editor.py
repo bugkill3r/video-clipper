@@ -95,12 +95,12 @@ class VideoEditor(VideoClipper):
                     
         return unique_keywords
     
-    def _split_text_into_chunks(self, text: str, max_words: int = 4) -> List[str]:
+    def _split_text_into_chunks(self, text: str, max_words: int = 5) -> List[str]:
         """Splits text into smaller chunks for better caption timing and readability.
         
         Args:
             text: The text to split into chunks
-            max_words: Maximum number of words per chunk (3-5 words per screenshot style)
+            max_words: Maximum number of words per chunk (4-6 words per screen as requested)
             
         Returns:
             List of text chunks
@@ -123,12 +123,12 @@ class VideoEditor(VideoClipper):
             # Split sentence into words
             words = sentence.split()
             
-            # For very short sentences (3-4 words), keep them intact
-            if len(words) <= max_words:
+            # For very short sentences (4-6 words), keep them intact
+            if len(words) <= max_words + 1:  # Allow up to 6 words per chunk
                 chunks.append(" ".join(words))
                 continue
             
-            # For longer sentences, try to create natural phrases (mimicking speech rhythm)
+            # For longer sentences, try to create natural 2-line phrases
             # Look for natural breaking points like commas, conjunctions
             natural_breaks = [i for i, word in enumerate(words) 
                             if word.endswith(',') or word.lower() in ['and', 'but', 'or', 'because', 'so']]
@@ -137,7 +137,7 @@ class VideoEditor(VideoClipper):
                 # Use natural breaking points to create chunks
                 current_start = 0
                 for break_point in natural_breaks:
-                    # Only create chunk if it's not too long
+                    # Only create chunk if it's not too long (max 6 words)
                     if break_point - current_start + 1 <= max_words + 1:
                         chunk = words[current_start:break_point + 1]
                         chunks.append(" ".join(chunk))
@@ -146,41 +146,66 @@ class VideoEditor(VideoClipper):
                 # Add any remaining words
                 if current_start < len(words):
                     remaining = words[current_start:]
-                    # Process remaining words in small groups
+                    # Process remaining words in groups of 4-6 words
                     for i in range(0, len(remaining), max_words):
                         sub_chunk = remaining[i:i+max_words]
                         if sub_chunk:
                             chunks.append(" ".join(sub_chunk))
             else:
-                # No natural breaks, so just split into equal chunks of max_words
-                for i in range(0, len(words), max_words):
-                    chunk = words[i:i+max_words]
-                    if chunk:
-                        chunks.append(" ".join(chunk))
+                # No natural breaks, so split into chunks of 4-6 words
+                # Try to keep a good rhythm with alternating lengths
+                i = 0
+                while i < len(words):
+                    # Create varied chunk sizes (4, 5, or 6 words) for better rhythm
+                    if i + max_words + 1 <= len(words):  # Can fit a full chunk
+                        # Determine chunk size (4, 5, or 6) based on the sentence structure
+                        # Use a smaller chunk if the next word is a natural break point
+                        for chunk_size in range(max_words + 1, max_words - 1, -1):
+                            if i + chunk_size < len(words) and (words[i + chunk_size - 1].endswith(',') or 
+                               words[i + chunk_size - 1].endswith('.') or 
+                               words[i + chunk_size - 1].endswith('?') or
+                               words[i + chunk_size - 1].endswith('!')):
+                                chunks.append(" ".join(words[i:i+chunk_size]))
+                                i += chunk_size
+                                break
+                        else:
+                            # No natural break found, use standard size (5 words)
+                            chunks.append(" ".join(words[i:i+max_words]))
+                            i += max_words
+                    else:
+                        # Final chunk with remaining words
+                        chunks.append(" ".join(words[i:]))
+                        i = len(words)
         
-        # Further refinement - ensure each chunk has an emphasized word if possible
+        # Ensure each chunk has at least one significant word that can be highlighted
         refined_chunks = []
         for chunk in chunks:
             words = chunk.split()
-            has_keyword = False
             
-            # Check if this chunk already has a potential keyword (non-stopword)
-            for word in words:
-                clean_word = word.strip('.,!?;:"\'()[]{}').lower()
-                if len(clean_word) > 3 and clean_word not in STOPWORDS:
-                    has_keyword = True
-                    break
-            
-            # If this chunk has a keyword, keep it as is
-            if has_keyword or len(words) <= 2:  # Very short chunks should stay intact
-                refined_chunks.append(chunk)
-            else:
-                # No keywords in this chunk, so try to combine with another chunk
-                # Only combine if we have a previous chunk and the combined length isn't too long
-                if refined_chunks and len(refined_chunks[-1].split()) + len(words) <= max_words + 2:
-                    refined_chunks[-1] = refined_chunks[-1] + " " + chunk
-                else:
+            # Only process chunks that have enough words
+            if len(words) > 0:
+                has_keyword = False
+                
+                # Check if this chunk already has a potential keyword (non-stopword)
+                for word in words:
+                    clean_word = word.strip('.,!?;:"\'()[]{}').lower()
+                    if len(clean_word) > 3 and clean_word not in STOPWORDS:
+                        has_keyword = True
+                        break
+                
+                # If this chunk has a keyword, keep it as is
+                if has_keyword or len(words) <= 2:  # Very short chunks should stay intact
                     refined_chunks.append(chunk)
+                else:
+                    # No keywords in this chunk, so try to combine with another chunk
+                    # Only combine if we have a previous chunk and the combined length isn't too long
+                    if refined_chunks and len(refined_chunks[-1].split()) + len(words) <= max_words + 1:
+                        refined_chunks[-1] = refined_chunks[-1] + " " + chunk
+                    else:
+                        refined_chunks.append(chunk)
+            else:
+                # Skip empty chunks
+                continue
                 
         # If we ended up with no chunks, return the original text as one chunk
         if not refined_chunks:
@@ -190,7 +215,7 @@ class VideoEditor(VideoClipper):
 
     def _create_caption_clip(self, text: str, duration: float, video_size: Tuple[int, int], 
                         highlight_words: Optional[List[str]] = None) -> TextClip:
-        """Create a styled caption clip with word highlighting, matching the style in the example.
+        """Create a styled caption clip with word highlighting like the reference screenshot.
         
         Args:
             text: The caption text
@@ -211,191 +236,210 @@ class VideoEditor(VideoClipper):
                 
             video_width, video_height = video_size
             
-            # Define caption style parameters - larger font for better visibility
-            # Match the large, bold font from the screenshot
-            font_size = max(45, int(video_height * 0.08))  # Larger font for more impact
+            # Styling parameters - make text readable but not too large
+            font_size = min(int(video_height * 0.08), 35)  # More reasonable font size for better readability
             
-            # If no highlight words provided, extract them automatically
-            if not highlight_words or len(highlight_words) == 0:
-                highlight_words = self._extract_keywords(text)
-                logger.info(f"Auto-extracted keywords: {highlight_words}")
-            
-            # Colors from the screenshot - bright yellow for highlights with black stroke,
-            # white for regular text with black stroke for readability
-            highlight_color = (255, 255, 0)  # Bright yellow like in the screenshot
-            regular_color = (255, 255, 255)  # White
-            
-            # Convert highlight words to lowercase for case-insensitive comparison
-            highlight_words_lower = [word.lower() for word in highlight_words]
-            
-            # Now we'll colorize individual words to match the screenshot exactly
-            # Break the text into words to identify which should be highlighted
-            words = text.split()
-            colorized_words = []
-            
-            for word in words:
-                # Strip punctuation for matching but keep it for display
-                clean_word = word.strip('.,!?;:"\'()[]{}')
-                
-                # Check if this word should be highlighted (case-insensitive)
-                should_highlight = False
-                for highlight in highlight_words:
-                    if clean_word.lower() == highlight.lower():
-                        should_highlight = True
-                        break
-                
-                # Add the word with its color coding
-                if should_highlight:
-                    colorized_words.append((word, highlight_color))
-                else:
-                    colorized_words.append((word, regular_color))
-            
-            # Try creating the text clip with advanced styling for MoviePy 2.1.1/2.1.2
             try:
-                # In MoviePy 2.1.1/2.1.2, create individual clips for each word
+                # PRO APPROACH: Create individual word clips with colored text for highlighting
+                words = text.split()
                 word_clips = []
                 
-                # Total width calculation for positioning
-                total_width = 0
-                word_widths = []
+                # Find highlight words
+                highlight_indices = []
                 
-                # First pass to create clips and measure total width
-                for word_text, word_color in colorized_words:
-                    try:
-                        word_clip = TextClip(
-                            font='Arial-Bold',  # Try with Arial-Bold first for greater impact
-                            text=word_text + " ",  # Add space after each word
-                            font_size=font_size,
-                            color=word_color, 
-                            stroke_color='black',
-                            stroke_width=4,  # Thicker stroke for better readability
-                            method='label'
-                        )
-                        total_width += word_clip.w
-                        word_widths.append(word_clip.w)
-                        word_clips.append((word_clip, word_color))
-                    except Exception as e:
-                        # Fallback to Arial if Arial-Bold fails
-                        try:
-                            word_clip = TextClip(
-                                font='Arial',
-                                text=word_text + " ",
-                                font_size=font_size,
-                                color=word_color,
-                                stroke_color='black',
-                                stroke_width=4,
-                                method='label'
-                            )
-                            total_width += word_clip.w
-                            word_widths.append(word_clip.w)
-                            word_clips.append((word_clip, word_color))
-                        except Exception as e2:
-                            logger.error(f"Failed to create word clip: {e2}")
-                            # Skip this word if it fails
-                            continue
+                # Try to match with provided keywords first
+                if highlight_words and len(highlight_words) > 0:
+                    for i, word in enumerate(words):
+                        clean_word = word.strip('.,!?;:"\'()[]{}').lower()
+                        if any(hw.lower() in clean_word for hw in highlight_words):
+                            highlight_indices.append(i)
                 
-                # Now position each word clip properly
-                composite_clips = []
-                current_x = int((video_width - total_width) / 2)  # Center the text line
+                # If no highlight words matched, try to find significant words
+                if not highlight_indices and len(words) > 2:
+                    for i, word in enumerate(words):
+                        clean_word = word.strip('.,!?;:"\'()[]{}').lower()
+                        if len(clean_word) > 3 and clean_word.lower() not in STOPWORDS:
+                            highlight_indices.append(i)
+                            # Just highlight one significant word if no keywords matched
+                            break
                 
-                # Position words in a row
-                for i, (word_clip, color) in enumerate(word_clips):
-                    # Add animation effects based on color - highlighted words get more effects
-                    clip_duration = duration
+                # Log highlighted words with their colors
+                if highlight_indices:
+                    highlighted_words = []
+                    for i, idx in enumerate(highlight_indices):
+                        color = "YELLOW" if i % 2 == 0 else "GREEN"
+                        highlighted_words.append(f"{words[idx]} ({color})")
+                    logger.info(f"Words to highlight: {highlighted_words}")
+                
+                # Create clips for each word
+                word_clips = []
+                word_sizes = []
+                spacing = int(font_size * 0.3)  # Space between words
+                
+                for i, word in enumerate(words):
+                    # Determine if this word should be highlighted
+                    is_highlight = (i in highlight_indices)
                     
-                    # Add slight fade and scale animation for all words (subtle animation)
-                    # Scale up and fade in at start for a subtle pop effect
-                    word_clip = word_clip.with_duration(clip_duration)
+                    # Choose color - alternate between yellow and green for highlights
+                    if is_highlight:
+                        highlight_index = highlight_indices.index(i) if i in highlight_indices else 0
+                        word_color = "#FFFF00" if highlight_index % 2 == 0 else "#00FF00"  # Yellow/Green alternating
+                    else:
+                        word_color = "white"
                     
-                    # Position the word clip
-                    positioned_clip = word_clip.with_position((current_x, int(video_height * 0.7)))
+                    # Add space to all words except the last one
+                    display_word = word + (" " if i < len(words) - 1 else "")
                     
-                    # Add extra visual impact for highlighted words
-                    if color == highlight_color:
-                        # Make highlighted words dynamic and eye-catching with subtle effects
-                        # This matches the screenshot where highlighted words stand out
-                        
-                        # For highlighted words, we apply simple but effective animation
-                        # The simple opacity effect is more reliable than complex scaling
-                        
-                        # Apply a simple fade-in effect for highlighted words
-                        # This is more reliable than complex animations
-                        try:
-                            # Add a slightly quicker fade-in for highlighted words
-                            positioned_clip = positioned_clip.with_opacity(
-                                lambda t: min(1.0, 2.0 * t) if t < 0.2 else 1.0
-                            )
-                        except Exception as e:
-                            # If effects fail, fallback to basic positioning
-                            logger.error(f"Effect application failed: {e}")
-                            # Keep the clip without advanced effects
-                        
+                    # Create word clip
+                    word_clip = TextClip(
+                        text=display_word,
+                        font='Arial',
+                        font_size=font_size,
+                        color=word_color,
+                        stroke_color="black", 
+                        stroke_width=1 if is_highlight else 2,  # Lighter stroke for highlighted words to look better
+                        method="label"
+                    ).with_duration(duration)
+                    
+                    # Store the clip and its size
+                    word_clips.append(word_clip)
+                    word_sizes.append((word_clip.w, word_clip.h))
+                
+                # Calculate the total width and maximum height
+                total_width = sum(w for w, h in word_sizes)
+                max_height = max(h for w, h in word_sizes) if word_sizes else 0
+                
+                # Create a background for the text
+                bg_width = int(min(total_width * 1.1, video_width * 0.85))
+                bg_height = int(max_height * 1.3)
+                
+                # Create background clip
+                bg = ColorClip(
+                    size=(bg_width, bg_height),
+                    color=(0, 0, 0),
+                    duration=duration
+                ).with_opacity(0.9)  # More opaque background
+                
+                # Position words horizontally on the background
+                composite_clips = [bg]
+                x_position = (bg_width - total_width) // 2  # Center text horizontally
+                
+                for word_clip, (w, h) in zip(word_clips, word_sizes):
+                    # Position word at the right x position and center vertically
+                    positioned_clip = word_clip.with_position((x_position, (bg_height - h) // 2))
                     composite_clips.append(positioned_clip)
-                    current_x += word_widths[i]
+                    x_position += w  # Move to the position for the next word
                 
-                # Create a composite clip from all word clips
-                if composite_clips:
-                    caption_clip = CompositeVideoClip(composite_clips, size=video_size)
-                    caption_clip = caption_clip.with_duration(duration)
-                    logger.info("Created advanced styled caption with word-by-word highlighting")
-                else:
-                    raise ValueError("No word clips were created successfully")
+                # Create composite of background and word clips
+                caption_composite = CompositeVideoClip(
+                    composite_clips,
+                    size=(bg_width, bg_height)
+                ).with_duration(duration)
+                
+                # Position the whole caption at the bottom of the screen
+                positioned_caption = caption_composite.with_position(
+                    ("center", int(video_height * 0.88))  # Position lower on screen
+                )
+                
+                logger.info("Created professional caption with word-by-word highlighting")
+                return positioned_caption
                 
             except Exception as e:
-                logger.error(f"Failed to create advanced caption: {e}")
+                logger.error(f"Failed to create word-by-word highlighted caption: {e}")
                 
-                # Fallback to simpler implementation if word-by-word fails
+                # FALLBACK: Create a single text clip with highlight markers
                 try:
-                    # Create a single text clip with standard styling
-                    caption_clip = TextClip(
-                        font='Arial',  # Use Arial font which is more commonly available
-                        text=text,
+                    words = text.split()
+                    highlight_indices = []
+                    
+                    # Find words to highlight
+                    if highlight_words and len(highlight_words) > 0:
+                        for i, word in enumerate(words):
+                            clean_word = word.strip('.,!?;:"\'()[]{}').lower()
+                            if any(hw.lower() in clean_word for hw in highlight_words):
+                                highlight_indices.append(i)
+                    
+                    # If no matches, try to find significant words
+                    if not highlight_indices and len(words) > 2:
+                        for i, word in enumerate(words):
+                            clean_word = word.strip('.,!?;:"\'()[]{}').lower()
+                            if len(clean_word) > 3 and clean_word.lower() not in STOPWORDS:
+                                highlight_indices.append(i)
+                                break
+                    
+                    # Create a marked version of the text for highlighting
+                    if highlight_indices:
+                        for idx in sorted(highlight_indices, reverse=True):
+                            words[idx] = f"**{words[idx]}**"
+                    
+                    marked_text = " ".join(words)
+                    clean_text = text
+                    
+                    # Create the caption
+                    caption_text = TextClip(
+                        text=clean_text,
+                        font='Arial',
                         font_size=font_size,
-                        color=regular_color,
-                        stroke_color='black',
-                        stroke_width=4,  # Thicker stroke for greater impact
-                        method='label'
-                    )
-                    # Set duration using with_duration
-                    caption_clip = caption_clip.with_duration(duration)
-                    
-                    # Add a fade-in/pulse animation
-                    caption_clip = caption_clip.with_opacity(
-                        lambda t: min(1.0, 1.5 * t) if t < 0.3 else 1.0
+                        color="white",
+                        stroke_color="black", 
+                        stroke_width=2,
+                        method="label"
                     )
                     
-                    logger.info("Created fallback styled caption")
+                    # Create a background for the caption
+                    bg_width = int(min(caption_text.w * 1.1, video_width * 0.85))
+                    bg_height = int(caption_text.h * 1.3)
+                    
+                    bg = ColorClip(
+                        size=(bg_width, bg_height),
+                        color=(0, 0, 0),
+                        duration=duration
+                    ).with_opacity(0.9)
+                    
+                    # Position caption text on background
+                    text_on_bg = CompositeVideoClip(
+                        [bg, caption_text.with_position("center")],
+                        size=(bg_width, bg_height)
+                    )
+                    
+                    # Position the whole caption at the bottom of the screen
+                    caption_with_bg = text_on_bg.with_position(
+                        ("center", int(video_height * 0.88))
+                    ).with_duration(duration)
+                    
+                    logger.info("Created fallback caption with basic text")
+                    return caption_with_bg
+                    
                 except Exception as e2:
-                    logger.error(f"Failed with fallback styling: {e2}")
+                    logger.error(f"Failed to create fallback caption: {e2}")
                     
-                    # Last-resort fallback with absolute minimal parameters
+                    # SUPER FALLBACK: Just basic text with no styling
                     try:
                         caption_clip = TextClip(
-                            font='Arial',
                             text=text,
-                            font_size=font_size
+                            font="Arial",
+                            font_size=font_size,
+                            color="white",
+                            stroke_color="black",
+                            stroke_width=3,
+                            method="label" 
                         )
+                        
+                        # Set duration and position
                         caption_clip = caption_clip.with_duration(duration)
-                        logger.info("Created minimal caption with basic parameters")
+                        caption_clip = caption_clip.with_position(
+                            ("center", int(video_height * 0.85))
+                        )
+                        
+                        logger.info("Created simple fallback caption")
+                        return caption_clip
+                        
                     except Exception as e3:
-                        logger.error(f"All caption creation attempts failed: {e3}")
+                        logger.error(f"Failed to create super fallback caption: {e3}")
                         return None
-            
-            # Position captions in the lower part of the video, matching the screenshot
-            # The screenshot shows captions positioned about 1/3 up from the bottom
-            position_y = int(video_height * 0.7)
-            
-            # Apply final positioning - center horizontally, fixed position vertically
-            # Only needed for the fallback implementation (not for word-by-word)
-            if 'composite_clips' not in locals() or not composite_clips:
-                caption_clip = caption_clip.with_position(('center', position_y))
-            
-            logger.info(f"Created caption clip with improved styling")
-            return caption_clip
             
         except Exception as e:
             logger.error(f"Caption creation failed: {str(e)}")
-            # Return None if we can't create the caption
             return None
     
     def create_clip(
@@ -475,22 +519,70 @@ class VideoEditor(VideoClipper):
                             logger.info(f"Split text into {len(chunks)} small chunks (4-6 words each)")
                             
                             caption_clips = []
-                            # Each chunk gets a short duration - words should appear briefly
-                            # Caption duration in the screenshot is very short (1-2 seconds per phrase)
-                            chunk_duration = min(2.0, subclip.duration / len(chunks))
+                            # More precise timing for captions to align with speech
+                            # Calculate exact duration and timing for each chunk
                             
+                            # Use a precise speech rate estimate
+                            total_words = len(segment.text.split())
+                            speech_rate = total_words / subclip.duration if subclip.duration > 0 else 2.0
+                            
+                            # Ensure reasonable speech rate (not too fast or slow)
+                            if speech_rate > 3.0:  # Too fast
+                                speech_rate = 2.5  # More natural pace
+                            elif speech_rate < 1.0:  # Too slow
+                                speech_rate = 1.5  # Reasonable minimum
+                                
+                            # Calculate total words to distribute
+                            total_chunk_words = sum(len(chunk.split()) for chunk in chunks)
+                            
+                            # Distribute video duration based on word count
+                            chunk_durations = []
+                            for chunk in chunks:
+                                words_in_chunk = len(chunk.split())
+                                # Each chunk gets a proportion of total time based on its word count
+                                # Minimum 1.5 seconds per chunk to ensure readability
+                                proportion = words_in_chunk / max(1, total_chunk_words)
+                                duration = max(1.5, proportion * subclip.duration)
+                                chunk_durations.append(min(duration, subclip.duration / 2))  # Cap at half the subclip duration
+                            
+                            # Distribute chunks evenly across the entire subclip
+                            # Use more precise timing to match speech
+                            chunk_start_times = []
+                            total_duration = sum(chunk_durations)
+                            
+                            # Distribute chunks evenly if their total duration is less than clip duration
+                            if total_duration < subclip.duration:
+                                spacing = (subclip.duration - total_duration) / max(1, len(chunks) - 1)
+                                current_time = 0
+                                
+                                for duration in chunk_durations:
+                                    chunk_start_times.append(current_time)
+                                    current_time += duration + spacing
+                            else:
+                                # If chunks would be too long, scale them down proportionally
+                                scale_factor = 0.95 * subclip.duration / total_duration
+                                chunk_durations = [d * scale_factor for d in chunk_durations]
+                                
+                                current_time = 0
+                                small_gap = 0.1  # Small gap between chunks
+                                
+                                for duration in chunk_durations:
+                                    chunk_start_times.append(current_time)
+                                    current_time += duration + small_gap
+                            
+                            # Process each chunk and create caption clips
                             for i, chunk_text in enumerate(chunks):
-                                # Auto-generate keywords for each chunk
-                                # In the screenshot, almost every chunk has a highlighted word
+                                # Choose appropriate keywords for this chunk
                                 chunk_keywords = []
                                 
                                 # Extract keywords specific to this chunk
                                 if highlight_keywords is None:
-                                    # Try to highlight at least one word in each chunk if possible
+                                    # Try to find significant words in this chunk
                                     chunk_words = chunk_text.split()
                                     for word in chunk_words:
-                                        if len(word) > 3 and word.lower() not in STOPWORDS:
-                                            chunk_keywords.append(word)
+                                        clean_word = word.strip('.,!?;:"\'()[]{}')
+                                        if len(clean_word) > 3 and clean_word.lower() not in STOPWORDS:
+                                            chunk_keywords.append(clean_word)
                                             break
                                     
                                     # If no keywords found, use extracted keywords from whole segment
@@ -502,39 +594,17 @@ class VideoEditor(VideoClipper):
                                         if word.lower() in chunk_text.lower():
                                             chunk_keywords.append(word)
                                 
-                                # Calculate timing for this chunk within the subclip
-                                # For natural pacing, add a small gap between each chunk (mimics natural speech)
-                                # This creates the effect of captions appearing exactly when words are spoken
-                                chunk_gap = min(0.3, subclip.duration / (len(chunks) * 4))  # Small gap between chunks
-                                
-                                # Time each chunk to appear at the right moment with natural pacing
-                                # Use a slightly staggered timing for more natural feel (like in the screenshot)
-                                if len(chunks) > 1:
-                                    # For multiple chunks, stagger them with small gaps in between
-                                    # This matches the cadence of the spoken words better
-                                    chunk_start = i * ((subclip.duration - (chunk_gap * len(chunks))) / len(chunks))
-                                    # Add progressive gap between chunks for natural pacing
-                                    chunk_start += i * chunk_gap
-                                else:
-                                    # For a single chunk, center it in the subclip
-                                    chunk_start = (subclip.duration - chunk_duration) / 2
-                                
-                                # Create caption clip for this chunk with the screenshot style
-                                # Reduce duration slightly for a punchier, more animated feel
-                                # This makes the captions appear briefly exactly when words are spoken
-                                effective_duration = min(chunk_duration, 
-                                                       max(1.0, min(2.0, len(chunk_text.split()) * 0.35)))
-                                
+                                # Create caption clip with exactly one highlighted word (if possible)
                                 caption = self._create_caption_clip(
                                     chunk_text,
-                                    effective_duration,  # Shorter duration for punchier effect like in screenshot
+                                    chunk_durations[i],  # Use calculated duration for better timing
                                     video_size,
                                     chunk_keywords
                                 )
                                 
                                 if caption:
-                                    # Start this caption at the calculated time
-                                    caption = caption.with_start(chunk_start)
+                                    # Start this caption at the calculated time using chunk_start_times
+                                    caption = caption.with_start(chunk_start_times[i])
                                     caption_clips.append(caption)
                                     logger.info(f"Created caption for chunk {i+1}/{len(chunks)}: '{chunk_text}'")
                             
