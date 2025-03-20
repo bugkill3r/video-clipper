@@ -117,8 +117,8 @@ class VideoEditor(VideoClipper):
                 
             video_width, video_height = video_size
             
-            # Define caption style parameters
-            font_size = max(28, int(video_height * 0.08))  # Increased font size
+            # Define caption style parameters - larger font for better visibility
+            font_size = max(36, int(video_height * 0.1))  # Increased font size further
             
             # Set a default font - use system default
             font = None
@@ -128,168 +128,72 @@ class VideoEditor(VideoClipper):
                 highlight_words = self._extract_keywords(text)
                 logger.info(f"Auto-extracted keywords: {highlight_words}")
             
-            # Use enhanced styled text with colored words
-            if highlight_words and len(highlight_words) > 0:
-                # Create individual clips for each word with different colors for highlights
-                word_clips = []
-                words = text.split()
-                
-                # Choose high-contrast colors for highlights
-                highlight_colors = [
-                    (255, 82, 82),    # Red
-                    (255, 157, 80),   # Orange
-                    (255, 213, 79),   # Yellow
-                    (76, 175, 80),    # Green
-                    (33, 150, 243),   # Blue
-                    (156, 39, 176),   # Purple
-                    (255, 64, 129)    # Pink
-                ]
-                
-                for word in words:
-                    # Check if this word is a keyword (case-insensitive)
-                    word_clean = word.lower().strip(".,!?;:'\"()-")
-                    is_highlight = any(word_clean == hw.lower() for hw in highlight_words)
-                    
-                    # Choose color based on highlight status
-                    if is_highlight:
-                        color = random.choice(highlight_colors)
-                    else:
-                        color = 'white'
-                    
-                    # Create text clip for this word
-                    word_clip_args = {
-                        'txt': word + " ",  # Add space after word
-                        'fontsize': font_size * (1.2 if is_highlight else 1.0),  # Slightly larger for highlights
-                        'color': color,
-                        'stroke_color': 'black',
-                        'stroke_width': 2.0 if is_highlight else 1.5,  # Thicker stroke for highlights
-                        'method': 'label'
-                    }
-                    
-                    word_clip = TextClip(**word_clip_args).set_duration(duration)
-                    
-                    # Add shadow effect for better visibility
-                    if is_highlight:
-                        shadow_args = {
-                            'txt': word + " ",
-                            'fontsize': font_size * 1.2,
-                            'color': 'black',
-                            'stroke_width': 0,
-                            'method': 'label'
-                        }
-                        
-                        shadow = TextClip(**shadow_args).set_duration(duration)
-                        
-                        # Shift shadow slightly
-                        shadow = shadow.set_position((2, 2))
-                        word_clip = CompositeVideoClip([shadow, word_clip])
-                    
-                    word_clips.append(word_clip)
-                
-                # Create background with certain opacity
-                bg_color = (0, 0, 0)
-                bg_opacity = 0.8  # Increased opacity for better contrast
-                
-                # Calculate total width and height needed
-                total_width = sum(clip.w for clip in word_clips)
-                max_height = max(clip.h for clip in word_clips)
-                
-                # Ensure width isn't too large and wrap if needed
-                if total_width > video_width * 0.9:
-                    # Create multiline text clip instead
-                    text_clip_args = {
-                        'txt': text,
-                        'fontsize': font_size,
-                        'color': 'white',
-                        'stroke_color': 'black',
-                        'stroke_width': 2.0,
-                        'method': 'label',
-                        'size': (int(video_width * 0.9), None),
-                        'align': 'center'
-                    }
-                    
-                    caption_clip = TextClip(**text_clip_args).set_duration(duration)
-                    
-                    # Create semi-transparent background
-                    bg_width = caption_clip.w + 60
-                    bg_height = caption_clip.h + 40
-                    
-                    bg = ColorClip(
-                        size=(int(bg_width), int(bg_height)),
-                        color=bg_color
-                    ).set_opacity(bg_opacity).set_duration(duration)
-                    
-                    # Composite with background
-                    caption_with_bg = CompositeVideoClip([
-                        bg,
-                        caption_clip.set_position(('center', 'center'))
-                    ], size=(int(bg_width), int(bg_height)))
-                    
-                    # Position at bottom of screen with padding
-                    return caption_with_bg.set_position(('center', video_height - bg_height - 30))
-                
-                # Create a background clip
-                bg_width = min(video_width * 0.95, total_width + 60)  # Add padding
-                bg_height = max_height + 40  # Add padding
-                
-                bg = ColorClip(
-                    size=(int(bg_width), int(bg_height)),
-                    color=bg_color
-                ).set_opacity(bg_opacity).set_duration(duration)
-                
-                # Position word clips on the background
-                positioned_clips = [bg]
-                x_offset = (bg_width - total_width) / 2  # Center text horizontally
-                
-                for word_clip in word_clips:
-                    word_clip = word_clip.set_position((x_offset, 20))  # Center vertically
-                    x_offset += word_clip.w
-                    positioned_clips.append(word_clip)
-                
-                # Composite all clips
-                caption_clip = CompositeVideoClip(
-                    positioned_clips,
-                    size=(int(bg_width), int(bg_height))
-                ).set_duration(duration)
-                
-                # Position at bottom of screen with padding
-                caption_clip = caption_clip.set_position(('center', video_height - bg_height - 30))
-                return caption_clip
+            # Match the style from the example screenshot
+            # Use a simpler, more visible approach like in the example
+            text_with_highlights = text
             
+            # Define a gradient-like set of colors for an eye-catching look
+            text_colors = [
+                (255, 255, 255),    # White
+                (252, 238, 33),     # Yellow - similar to example
+                (252, 131, 33),     # Orange - similar to example
+                (247, 72, 48),      # Red-Orange - similar to example
+            ]
+            
+            # Choose color based on position in video (top, middle, bottom)
+            # This helps create a more visually interesting layout
+            segment_position = 0.5  # Default to middle
+            if hasattr(duration, 'start') and self._duration:
+                segment_position = duration.start / self._duration
+            
+            # Choose a color based on position
+            if segment_position < 0.33:
+                text_color = text_colors[1]  # Yellow for early segments
+            elif segment_position < 0.66:
+                text_color = text_colors[2]  # Orange for middle segments
             else:
-                # Simpler version without individual word highlighting
-                # Use a dictionary for kwargs to avoid duplicate arguments
-                text_clip_args = {
-                    'txt': text,
-                    'fontsize': font_size,
-                    'color': 'white',
-                    'stroke_color': 'black',
-                    'stroke_width': 2.0,
-                    'method': 'label',
-                    'size': (int(video_width * 0.9), None),
-                    'align': 'center'
-                }
-                
-                caption_clip = TextClip(**text_clip_args).set_duration(duration)
-                
-                # Create semi-transparent background
-                bg_width = caption_clip.w + 60
-                bg_height = caption_clip.h + 40
-                
-                bg = ColorClip(
-                    size=(int(bg_width), int(bg_height)),
-                    color=(0, 0, 0)
-                ).set_opacity(0.8).set_duration(duration)
-                
-                # Composite with background
-                caption_with_bg = CompositeVideoClip([
-                    bg,
-                    caption_clip.set_position(('center', 'center'))
-                ], size=(int(bg_width), int(bg_height)))
-                
-                # Position at bottom of screen
-                return caption_with_bg.set_position(('center', video_height - bg_height - 30))
-        
+                text_color = text_colors[3]  # Red-Orange for later segments
+            
+            # Create a simple text clip with thick outlines - matches the example style
+            text_clip_args = {
+                'txt': text,
+                'fontsize': font_size,
+                'color': text_color,
+                'stroke_color': 'black',
+                'stroke_width': 3.0,  # Thicker stroke for better visibility
+                'method': 'label',
+                'align': 'center'
+            }
+            
+            caption_clip = TextClip(**text_clip_args).set_duration(duration)
+            
+            # Create a dark semi-transparent background with rounded corners appearance
+            margin = int(font_size * 0.7)  # Margin around text
+            bg_width = min(video_width * 0.95, caption_clip.w + margin * 2)
+            bg_height = caption_clip.h + margin
+            
+            # Create background with high contrast
+            bg = ColorClip(
+                size=(int(bg_width), int(bg_height)),
+                color=(0, 0, 0)
+            ).set_opacity(0.85).set_duration(duration)  # Higher opacity for better readability
+            
+            # Position text on background
+            text_on_bg = CompositeVideoClip([
+                bg,
+                caption_clip.set_position(('center', 'center'))
+            ], size=(int(bg_width), int(bg_height)))
+            
+            # Position captions similar to example - prominently in lower part
+            # But not too close to the bottom (avoid device UI elements)
+            position_y = video_height - bg_height - int(video_height * 0.1)
+            
+            # Apply final positioning
+            final_caption = text_on_bg.set_position(('center', position_y))
+            
+            logger.info(f"Created caption clip with size {bg_width}x{bg_height}")
+            return final_caption
+            
         except Exception as e:
             logger.error(f"Caption creation failed: {str(e)}")
             # Return None if we can't create the caption
