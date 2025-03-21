@@ -102,7 +102,8 @@ def parse_srt_file(srt_path: str) -> List[Segment]:
             print(f"Error reading subtitles file: {e}")
             return []
     
-    segments = []
+    # Extract all subtitle entries with precise timing
+    subtitle_entries = []
     pattern = r'(\d+)\n(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})\n([\s\S]*?)(?=\n\d+\n|$)'
     
     for match in re.finditer(pattern, content):
@@ -110,17 +111,51 @@ def parse_srt_file(srt_path: str) -> List[Segment]:
         # Clean text (remove extra newlines and whitespace)
         text = re.sub(r'\n+', ' ', text).strip()
         
+        # Skip empty text
+        if not text:
+            continue
+        
         # Convert times to seconds
         start_sec = parse_srt_time(start_time)
         end_sec = parse_srt_time(end_time)
         
-        # Create segment
+        # Skip entries with very short duration
+        if end_sec - start_sec < 0.1:
+            continue
+            
+        # Store entry with exact timing
+        subtitle_entries.append({
+            'index': int(idx) if idx.isdigit() else 0,
+            'start': start_sec,
+            'end': end_sec,
+            'text': text,
+            'duration': end_sec - start_sec
+        })
+    
+    # Create segments from subtitle entries
+    segments = []
+    
+    # Process each subtitle entry as an individual segment with exact timing
+    for entry in subtitle_entries:
+        # Create a metadata dictionary with precise timing information
+        metadata = {
+            "subtitle_timing": True,
+            "exact_start": entry['start'],
+            "exact_end": entry['end'],
+            "subtitle_index": entry['index'],
+            "duration": entry['duration'],
+            "original_text": entry['text'],  # Store original text for reference
+            "is_subtitle_entry": True  # Flag to identify subtitle-based segments
+        }
+        
+        # Create a segment with precise timing information
         segment = Segment(
-            start=start_sec,
-            end=end_sec,
+            start=entry['start'],
+            end=entry['end'],
             score=0.7,  # Decent default score for subtitle segments
             segment_type=SegmentType.SPEECH,
-            text=text
+            text=entry['text'],
+            metadata=metadata  # Include subtitle timing data
         )
         segments.append(segment)
     
