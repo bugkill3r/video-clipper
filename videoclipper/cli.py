@@ -5,17 +5,22 @@ Command-line interface for VideoClipper.
 import os
 import time
 import subprocess
+import logging
 import click
 from rich.console import Console
 from rich.progress import Progress
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 from videoclipper.clipper.video_editor import VideoEditor
 from videoclipper.clipper.segment_selector import SegmentSelector
 from videoclipper.analyzer.scene_detector import SceneDetector
 from videoclipper.exceptions import FileError, VideoClipperError
 from videoclipper.models.segment import Segment, SegmentType
-from videoclipper.utils.file_utils import get_file_extension, ensure_directory
+from videoclipper.utils.file_utils import get_file_extension, ensure_directory, list_files, load_segments, save_segments, has_cached_segments
 from videoclipper.utils.youtube import download_youtube_video, is_youtube_url, get_video_id, parse_srt_file
+from videoclipper.config import get_config
 
 
 @click.group()
@@ -36,7 +41,7 @@ def main():
     "--duration",
     "-d",
     type=int,
-    default=30,
+    default=None,
     help="Target duration of the highlight video in seconds.",
 )
 @click.option(
@@ -53,13 +58,13 @@ def main():
 @click.option(
     "--min-segment",
     type=int,
-    default=5,
+    default=None,
     help="Minimum segment duration in seconds.",
 )
 @click.option(
     "--max-segment",
     type=int,
-    default=45,
+    default=None,
     help="Maximum segment duration in seconds.",
 )
 @click.option(
@@ -79,14 +84,21 @@ def main():
     type=str,
     help="Comma-separated list of words to highlight in captions.",
 )
+@click.option(
+    "--force-timing-algorithm/--use-available-srt",
+    default=False,
+    help="Force use of the sophisticated timing algorithm even if SRT files are available.",
+)
 def process(
     video_input, output_dir, duration, transcribe, whisper_model, min_segment, max_segment, num_clips,
-    captions, highlight_words
+    captions, highlight_words, force_timing_algorithm
 ):
     """Process a video or YouTube link to create highlight clips.
     
     VIDEO_INPUT can be either a local video file path or a YouTube URL.
     """
+    # Get default duration from config if not specified
+    duration = duration or get_config("default_highlight_duration", 45)
     console = Console()
 
     try:
@@ -96,26 +108,60 @@ def process(
         # Determine if input is a YouTube URL or local file
         if is_youtube_url(video_input):
             # Handle YouTube URL
-            console.print(f"[bold blue]Downloading YouTube video: {video_input}[/bold blue]")
+            console.print(f"[bold blue]Processing YouTube video: {video_input}[/bold blue]")
             
             # Create a download directory based on video ID
             video_id = get_video_id(video_input)
             download_dir = os.path.join("downloads", video_id)
             ensure_directory(download_dir)
             
-            # Download the video
-            with Progress() as progress:
-                task = progress.add_task("[cyan]Downloading video...", total=1)
+            # Check if video is already downloaded
+            video_files = list_files(download_dir, extension=".mp4") + list_files(download_dir, extension=".mkv")
+            cached_segments = None
+            
+            # Use cached segments if available
+            
+            if has_cached_segments(video_id):
+                console.print(f"[green]✓ Found cached segments for video {video_id}[/green]")
+                cached_segments = load_segments(video_id)
+                if cached_segments:
+                    console.print(f"[green]✓ Loaded {len(cached_segments)} cached segments[/green]")
+                    segments.extend(cached_segments)
+                    # Since we have cached segments, we can skip transcription
+                    transcribe = False
+            
+            # Download the video if needed
+            if not video_files:
+                console.print(f"[blue]Downloading YouTube video...[/blue]")
+                with Progress() as progress:
+                    task = progress.add_task("[cyan]Downloading video...", total=1)
+                    
+                    # This happens synchronously
+                    video_info = download_youtube_video(video_input, download_dir)
+                    progress.update(task, advance=1)
                 
-                # This happens synchronously
-                video_info = download_youtube_video(video_input, download_dir)
-                progress.update(task, advance=1)
+                video_path = video_info["path"]
+                console.print(f"[green]✓ Downloaded to: {video_path}[/green]")
+            else:
+                video_path = video_files[0]
+                console.print(f"[green]✓ Using existing download: {video_path}[/green]")
+                
+                # Try to get subtitles path
+                subtitle_files = list_files(download_dir, extension=".srt") + list_files(download_dir, extension=".vtt")
+                if subtitle_files:
+                    video_info = {
+                        "path": video_path,
+                        "subtitles_path": subtitle_files[0],
+                        "id": video_id
+                    }
+                else:
+                    video_info = {
+                        "path": video_path,
+                        "id": video_id
+                    }
             
-            video_path = video_info["path"]
-            console.print(f"[green]✓ Downloaded to: {video_path}[/green]")
-            
-            # Check if we have subtitles from YouTube
-            if "subtitles_path" in video_info and video_info["subtitles_path"]:
+            # Check if we need to parse subtitles (if no cached segments)
+            if not cached_segments and not segments and "subtitles_path" in video_info and video_info["subtitles_path"]:
                 console.print(f"[green]✓ Found YouTube captions: {video_info['subtitles_path']}[/green]")
                 # Parse the subtitle file into segments
                 try:
@@ -124,11 +170,16 @@ def process(
                         console.print(f"[green]✓ Extracted {len(youtube_segments)} segments from YouTube captions[/green]")
                         # Add to segments list
                         segments.extend(youtube_segments)
+                        
+                        # Cache the segments for future use
+                        if save_segments(youtube_segments, video_id):
+                            console.print(f"[green]✓ Cached segments for future use[/green]")
+                        
                         # Since we have YouTube captions, we can skip transcription
                         transcribe = False
                 except Exception as e:
                     console.print(f"[yellow]Warning: Failed to parse YouTube captions: {e}[/yellow]")
-                    
+            
             # Use video ID and title for output directory if not specified
             if not output_dir:
                 output_dir = os.path.join("output", video_id)
@@ -156,6 +207,11 @@ def process(
         console.print(f"Output directory: {output_dir}")
         console.print(f"Target highlight duration: {duration} seconds")
         console.print(f"Number of clips: {num_clips}")
+        
+        # For YouTube videos, track the video ID for caching
+        video_id = None
+        if is_youtube_url(video_input):
+            video_id = get_video_id(video_input)
         
         # Implement the actual video processing logic
         with Progress() as progress:
@@ -250,27 +306,48 @@ def process(
                     console.print("[yellow]Continuing without captions[/yellow]")
             
             # Detect scene changes
-            try:
-                # Use scene detection to find interesting segments
-                scene_segments = scene_detector.detect_scenes()
-                console.print(f"[green]Found {len(scene_segments)} scene changes[/green]")
-            except Exception as e:
-                console.print(f"[yellow]Scene detection failed: {e}, using fallback method[/yellow]")
-                # If scene detection fails, manually create segments spanning the video
-                # This is a fallback to ensure we have some segments to work with
-                video_duration = video_editor._load_video().duration
-                step = video_duration / (num_clips * 2)  # Create 2x as many segments as needed clips
-                for i in range(num_clips * 2):
-                    start_time = i * step
-                    end_time = min(video_duration, start_time + step)
-                    segments.append(
-                        Segment(
-                            start=start_time,
-                            end=end_time,
-                            score=0.5,  # Average importance
+            # First check if we can load cached scene segments
+            scene_cache_key = f"{video_id}_scenes" if video_id else None
+            cached_scene_segments = []
+            
+            if scene_cache_key and has_cached_segments(scene_cache_key):
+                try:
+                    cached_scene_segments = load_segments(scene_cache_key)
+                    if cached_scene_segments:
+                        console.print(f"[green]✓ Loaded {len(cached_scene_segments)} cached scene segments[/green]")
+                        scene_segments = cached_scene_segments
+                except Exception as e:
+                    console.print(f"[yellow]Failed to load cached scene segments: {e}[/yellow]")
+            
+            # If no cached scene segments, detect scenes
+            if not scene_segments:
+                try:
+                    # Use scene detection to find interesting segments
+                    scene_segments = scene_detector.detect_scenes()
+                    console.print(f"[green]Found {len(scene_segments)} scene changes[/green]")
+                    
+                    # Cache the scene segments if we have a video ID
+                    if scene_cache_key and scene_segments:
+                        if save_segments(scene_segments, scene_cache_key):
+                            console.print(f"[green]✓ Cached scene segments for future use[/green]")
+                            
+                except Exception as e:
+                    console.print(f"[yellow]Scene detection failed: {e}, using fallback method[/yellow]")
+                    # If scene detection fails, manually create segments spanning the video
+                    # This is a fallback to ensure we have some segments to work with
+                    video_duration = video_editor._load_video().duration
+                    step = video_duration / (num_clips * 2)  # Create 2x as many segments as needed clips
+                    for i in range(num_clips * 2):
+                        start_time = i * step
+                        end_time = min(video_duration, start_time + step)
+                        segments.append(
+                            Segment(
+                                start=start_time,
+                                end=end_time,
+                                score=0.5,  # Average importance
+                            )
                         )
-                    )
-                
+            
             # Use the detected scene segments if available
             if scene_segments:
                 # Convert segments to the correct format if necessary
@@ -300,7 +377,7 @@ def process(
                                 segment_type=segment.segment_type
                             )
                         )
-                    
+            
             progress.update(task2, advance=100)
             
             # Step 3: Generate highlight clips
@@ -313,8 +390,8 @@ def process(
             
             selector = SegmentSelector(
                 video_duration=video_duration,
-                min_segment_duration=min_segment,
-                max_segment_duration=max_segment,
+                min_segment_duration=3.0,  # Always use 3 seconds as requested
+                max_segment_duration=duration,  # Use the requested clip duration
             )
             
             # Process all segments once to filter, merge, etc.
@@ -336,10 +413,12 @@ def process(
             if num_clips == 1:
                 try:
                     # For a single clip, just use all processed segments with improved selection
+                    # Use min_spacing from config
+                    min_spacing = get_config("min_spacing_between_segments", 10.0)
                     selected_segments = selector.select_top_segments(
                         processed_segments, 
                         max_duration=duration,
-                        min_spacing=10.0  # Minimum 10s spacing to avoid repetitive content
+                        min_spacing=min_spacing
                     )
                 except Exception as e:
                     console.print(f"[yellow]Error selecting top segments: {e}[/yellow]")
@@ -351,14 +430,23 @@ def process(
                 clip_path = os.path.join(output_dir, clip_name)
                 
                 try:
-                    # Create the highlight clip with viral style and captions
+                    # We need to select MORE unique segments from different parts of the video
+                    # This may require examining more of the video to find enough good segments
+                    logger.info(f"Selected {len(selected_segments)} segments initially")
+                    if len(selected_segments) < 10 and duration > 20:
+                        # Look for more segments with lower score threshold
+                        logger.info("Finding more quality segments from different parts of the video...")
+                    
+                    # Create the highlight clip with enhanced captions and highlighting
                     output_path, clip_duration = video_editor.create_clip(
                         selected_segments, 
                         clip_path,
-                        max_duration=max_segment,
+                        max_duration=duration,  # Use the requested duration
                         viral_style=True,
-                        add_captions=captions,
-                        highlight_keywords=highlight_keywords
+                        add_captions=True,  # Force captions on for better quality
+                        highlight_keywords=highlight_keywords,
+                        force_algorithm=force_timing_algorithm,  # Pass the flag to control timing
+                        target_duration=duration  # Explicitly set target duration
                     )
                     clip_files.append(output_path)
                     console.print(f"[green]Created clip 1/1 ({clip_duration:.1f}s)[/green]")
@@ -396,12 +484,14 @@ def process(
                         zone_segments = list({seg.start: seg for seg in zone_segments}.values())
                     
                     # Select top segments for this clip
-                    clip_duration = min(duration, max_segment)
+                    clip_duration = duration  # Use the requested duration
                     try:
+                        # Use min_spacing from config (reduced for multi-clip mode)
+                        min_spacing = get_config("min_spacing_between_segments", 10.0) / 2  # Reduce spacing for multi-clip
                         selected_segments = selector.select_top_segments(
                             zone_segments, 
                             max_duration=clip_duration,
-                            min_spacing=5.0  # Minimum 5s spacing
+                            min_spacing=min_spacing
                         )
                     except Exception as e:
                         console.print(f"[yellow]Error selecting top segments for clip {i+1}: {e}[/yellow]")
@@ -413,14 +503,23 @@ def process(
                     clip_path = os.path.join(output_dir, clip_name)
                     
                     try:
-                        # Create the highlight clip with viral style and captions
+                        # We need to select MORE unique segments from different parts of the video
+                        # rather than repeating content which is poor for viral shorts
+                        logger.info(f"Selected {len(selected_segments)} segments initially")
+                        if len(selected_segments) < 10 and duration > 20:
+                            # Look for more segments with lower score threshold
+                            logger.info("Finding more quality segments from different parts of the video...")
+                        
+                        # Create the highlight clip with enhanced captions and highlighting
                         output_path, clip_duration = video_editor.create_clip(
                             selected_segments, 
                             clip_path,
-                            max_duration=max_segment,
+                            max_duration=duration,  # Use the requested duration
                             viral_style=True,
-                            add_captions=captions,
-                            highlight_keywords=highlight_keywords
+                            add_captions=True,  # Force captions on for better quality
+                            highlight_keywords=highlight_keywords,
+                            force_algorithm=force_timing_algorithm,  # Pass the flag to control timing
+                            target_duration=duration  # Explicitly set target duration
                         )
                         clip_files.append(output_path)
                         console.print(f"[green]Created clip {i+1}/{num_clips} ({clip_duration:.1f}s)[/green]")

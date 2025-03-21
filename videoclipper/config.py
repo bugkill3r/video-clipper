@@ -16,9 +16,27 @@ DEFAULT_CONFIG: Dict[str, any] = {
     "default_audio_codec": "aac",
 
     # Highlight generation
-    "default_highlight_duration": 30,  # seconds (shorter overall highlights)
-    "min_segment_duration": 5,  # seconds
+    "default_highlight_duration": 45,  # seconds (target for viral clips)
+    "min_segment_duration": 3,  # seconds
     "max_segment_duration": 45,  # seconds (longer segments for viral clips)
+    "min_spacing_between_segments": 10.0,  # seconds
+    "num_video_zones": 12,  # number of zones to divide video into for segment selection
+    "max_words_per_caption_line": 3,  # Maximum words per caption line
+    "max_caption_lines": 2,  # Maximum number of caption lines
+
+    # Caption styling
+    "caption_position": 0.66,  # Position from top (0.66 = bottom third)
+    "word_spacing": 0,  # Spacing between words in pixels
+    "caption_highlight_color": "#00FF00",  # Bright green for highlighted words
+    "caption_normal_color": "white",  # Color for non-highlighted words
+    "crossfade_duration": 0.5,  # seconds for transitions between clips
+
+    # Audio/speech detection
+    "speech_preroll_ms": 100,  # ms before speech to show captions
+    "speech_postroll_ms": 50,  # ms after speech to keep captions visible
+    "min_speech_segment_duration": 250,  # ms minimum speech segment duration
+    "min_gap_between_speech": 150,  # ms minimum gap between speech segments
+    "max_gap_for_caption_merge": 200,  # ms maximum gap to merge caption segments
 
     # Analysis settings
     "scene_detection_threshold": 30.0,
