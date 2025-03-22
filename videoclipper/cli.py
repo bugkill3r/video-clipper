@@ -89,13 +89,20 @@ def main():
     default=False,
     help="Force use of the sophisticated timing algorithm even if SRT files are available.",
 )
+@click.option(
+    "--vertical/--horizontal",
+    default=False,
+    help="Create vertical format (1080x1920) video for shorts/reels.",
+)
 def process(
     video_input, output_dir, duration, transcribe, whisper_model, min_segment, max_segment, num_clips,
-    captions, highlight_words, force_timing_algorithm
+    captions, highlight_words, force_timing_algorithm, vertical
 ):
     """Process a video or YouTube link to create highlight clips.
     
     VIDEO_INPUT can be either a local video file path or a YouTube URL.
+    
+    Use the --vertical flag to create clips in vertical format (1080x1920) for social media shorts/reels.
     """
     # Get default duration from config if not specified
     duration = duration or get_config("default_highlight_duration", 45)
@@ -207,6 +214,8 @@ def process(
         console.print(f"Output directory: {output_dir}")
         console.print(f"Target highlight duration: {duration} seconds")
         console.print(f"Number of clips: {num_clips}")
+        if vertical:
+            console.print(f"[bold cyan]Creating vertical format (1080x1920) for shorts/reels[/bold cyan]")
         
         # For YouTube videos, track the video ID for caching
         video_id = None
@@ -286,7 +295,7 @@ def process(
                     transcriber = WhisperTranscriber(temp_audio)
                     speech_segments = transcriber.transcribe(
                         model_size=whisper_model,
-                        min_segment_length=3.0  # Longer segments for better captions
+                        min_segment_length=min_segment or 1.5  # Use CLI parameter if provided, otherwise default to 1.5
                     )
                     
                     # Clean up temp file
@@ -309,6 +318,7 @@ def process(
             # First check if we can load cached scene segments
             scene_cache_key = f"{video_id}_scenes" if video_id else None
             cached_scene_segments = []
+            scenes_from_cache = False
             
             if scene_cache_key and has_cached_segments(scene_cache_key):
                 try:
@@ -316,6 +326,7 @@ def process(
                     if cached_scene_segments:
                         console.print(f"[green]✓ Loaded {len(cached_scene_segments)} cached scene segments[/green]")
                         scene_segments = cached_scene_segments
+                        scenes_from_cache = True
                 except Exception as e:
                     console.print(f"[yellow]Failed to load cached scene segments: {e}[/yellow]")
             
@@ -323,21 +334,24 @@ def process(
             if not scene_segments:
                 try:
                     # Use scene detection to find interesting segments
+                    console.print(f"[cyan]Detecting scene changes in video...[/cyan]")
                     scene_segments = scene_detector.detect_scenes()
                     console.print(f"[green]Found {len(scene_segments)} scene changes[/green]")
                     
                     # Cache the scene segments if we have a video ID
                     if scene_cache_key and scene_segments:
+                        console.print(f"[cyan]Caching scene segments for future use...[/cyan]")
                         if save_segments(scene_segments, scene_cache_key):
-                            console.print(f"[green]✓ Cached scene segments for future use[/green]")
+                            console.print(f"[green]✓ Cached {len(scene_segments)} scene segments[/green]")
                             
                 except Exception as e:
                     console.print(f"[yellow]Scene detection failed: {e}, using fallback method[/yellow]")
                     # If scene detection fails, manually create segments spanning the video
                     # This is a fallback to ensure we have some segments to work with
                     video_duration = video_editor._load_video().duration
-                    step = video_duration / (num_clips * 2)  # Create 2x as many segments as needed clips
-                    for i in range(num_clips * 2):
+                    # Create more segments with smaller step size for shorts/reels
+                    step = video_duration / (num_clips * 4)  # Create 4x as many segments as needed clips
+                    for i in range(num_clips * 4):
                         start_time = i * step
                         end_time = min(video_duration, start_time + step)
                         segments.append(
@@ -390,13 +404,20 @@ def process(
             
             selector = SegmentSelector(
                 video_duration=video_duration,
-                min_segment_duration=3.0,  # Always use 3 seconds as requested
-                max_segment_duration=duration,  # Use the requested clip duration
+                min_segment_duration=min_segment,  # Use CLI parameter if provided
+                max_segment_duration=max_segment or duration,  # Use CLI parameter or requested clip duration
             )
             
             # Process all segments once to filter, merge, etc.
             try:
                 processed_segments = selector.process_segments(segments)
+                
+                # Cache the processed segments for YouTube videos if not already cached
+                if is_youtube_url(video_input) and video_id:
+                    # Cache even if we already had cached segments - this preserves our shorter segments
+                    console.print(f"[cyan]Caching processed segments for future use...[/cyan]")
+                    if save_segments(processed_segments, video_id):
+                        console.print(f"[green]✓ Saved {len(processed_segments)} processed segments to cache[/green]")
             except Exception as e:
                 console.print(f"[yellow]Error processing segments: {e}[/yellow]")
                 console.print("[yellow]Using original segments[/yellow]")
@@ -415,10 +436,15 @@ def process(
                     # For a single clip, just use all processed segments with improved selection
                     # Use min_spacing from config
                     min_spacing = get_config("min_spacing_between_segments", 10.0)
+                    # Set target duration for consistent naming
+                    clip_target_duration = duration
+                    console.print(f"[cyan]Creating single clip with target duration: {clip_target_duration}s[/cyan]")
+                    
                     selected_segments = selector.select_top_segments(
                         processed_segments, 
-                        max_duration=duration,
-                        min_spacing=min_spacing
+                        max_duration=clip_target_duration,
+                        min_spacing=min_spacing,
+                        force_selection=False  # For single clip, we want diverse segments from across the video
                     )
                 except Exception as e:
                     console.print(f"[yellow]Error selecting top segments: {e}[/yellow]")
@@ -441,12 +467,15 @@ def process(
                     output_path, clip_duration = video_editor.create_clip(
                         selected_segments, 
                         clip_path,
-                        max_duration=duration,  # Use the requested duration
+                        max_duration=clip_target_duration,  # Use the requested duration
+                        min_segment_duration=min_segment,  # Pass CLI parameter
+                        max_segment_duration=max_segment,  # Pass CLI parameter 
                         viral_style=True,
-                        add_captions=True,  # Force captions on for better quality
+                        add_captions=captions,  # Use CLI option for captions
                         highlight_keywords=highlight_keywords,
                         force_algorithm=force_timing_algorithm,  # Pass the flag to control timing
-                        target_duration=duration  # Explicitly set target duration
+                        target_duration=clip_target_duration,  # Explicitly set target duration
+                        vertical_format=vertical  # Use vertical format for shorts/reels if requested
                     )
                     clip_files.append(output_path)
                     console.print(f"[green]Created clip 1/1 ({clip_duration:.1f}s)[/green]")
@@ -455,48 +484,264 @@ def process(
                 
                 progress.update(task3, advance=1)
             else:
-                # For multiple clips, divide the video into time zones
+                # For multiple clips, we need to FORCEFULLY divide the video into completely different segments
                 video_duration = video_editor._duration or 0
-                zone_size = video_duration / max(1, num_clips)  # Prevent division by zero
+                clip_target_duration = duration  # Use the requested duration for each clip
+                console.print(f"[bold cyan]Creating {num_clips} COMPLETELY DISTINCT highlight clips, each {clip_target_duration}s[/bold cyan]")
                 
-                for i in range(num_clips):
-                    # Define the time zone for this clip
-                    zone_start = i * zone_size
-                    zone_end = min(video_duration, (i + 1) * zone_size)
+                # Create a tracking mechanism using IDs instead of segment objects
+                used_segment_ids = set()  # Track by segment start/end, not objects
+                
+                # Divide the video into completely separate sections
+                time_sorted_segments = sorted(processed_segments, key=lambda x: x.start)
+                total_segments = len(time_sorted_segments)
+                
+                if total_segments < num_clips * 3:
+                    console.print(f"[yellow]Warning: Only {total_segments} total segments for {num_clips} clips.[/yellow]")
+                    console.print("[yellow]Creating clips from different parts of the video, but some content may overlap.[/yellow]")
                     
-                    # Filter segments that fall primarily within this zone
-                    zone_segments = [
-                        seg for seg in processed_segments 
-                        if seg.start >= zone_start and seg.start < zone_end
-                    ]
+                    # If we have very few segments, we take a different approach
+                    # We will organize segments by their position in the video timeline
+                    # and try to create clips from different parts
+                
+                # Handle edge case: fewer segments than clips
+                if total_segments < num_clips:
+                    console.print(f"[bold red]Error: Only {total_segments} segments but {num_clips} clips requested![/bold red]")
+                    console.print("[yellow]Creating fewer clips than requested.[/yellow]")
+                    num_clips = max(1, total_segments)
+                
+                # Professional segmentation algorithm for multiple quality clips
+                # Always ensure we can create num_clips full professional clips
+                video_duration = video_editor._duration or 0
+                
+                # PROFESSIONAL APPROACH: Use a more sophisticated zone-based segmentation
+                # We'll create enough zones to ensure variety and good coverage
+                zone_count = max(num_clips * 5, 25)  # Use more zones for better granularity
+                zone_size = video_duration / zone_count
+                
+                # Create zone groups to organize segments
+                zone_groups = {i: [] for i in range(zone_count)}
+                
+                # Assign existing segments to zones
+                for segment in time_sorted_segments:
+                    zone_idx = min(int(segment.start / zone_size), zone_count - 1)
+                    zone_groups[zone_idx].append(segment)
+                
+                # Professional fix for empty zones - create segments for areas with no content
+                empty_zones = [i for i, segments in zone_groups.items() if not segments]
+                
+                if empty_zones:
+                    console.print(f"[yellow]Found {len(empty_zones)} empty zones. Creating segments to ensure quality clips.[/yellow]")
                     
-                    # Add some segments from adjacent zones to ensure enough content
-                    if len(zone_segments) < 5:
-                        # Add segments that are close to this zone
-                        adjacent_segments = [
-                            seg for seg in processed_segments
-                            if abs(seg.start - zone_start) < zone_size * 0.3
-                            or abs(seg.start - zone_end) < zone_size * 0.3
-                        ]
-                        zone_segments.extend(adjacent_segments)
+                    # Calculate how many new segments we need - at least 8 per clip
+                    needed_segments = max(0, (num_clips * 8) - total_segments)
+                    
+                    # Create segments to fill empty zones - focus on empty zones first
+                    for zone_idx in empty_zones:
+                        # Calculate zone boundaries
+                        zone_start = zone_idx * zone_size
+                        zone_end = min(video_duration, (zone_idx + 1) * zone_size)
+                        zone_duration = zone_end - zone_start
                         
-                        # Remove duplicates
-                        zone_segments = list({seg.start: seg for seg in zone_segments}.values())
+                        # Create segments within this zone (up to 2 per zone for variety)
+                        segments_to_create = min(2, int(zone_duration / 3))  # Roughly one segment per 3 seconds
+                        
+                        for i in range(segments_to_create):
+                            # Calculate segment position - distribute evenly
+                            segment_position = zone_start + ((i+1) * zone_duration / (segments_to_create+1))
+                            
+                            # Create segment with professional duration (3-8s is ideal for clips)
+                            segment_duration = min(max(3.0, zone_duration * 0.3), 8.0)
+                            
+                            # Ensure segment is within zone and video boundaries
+                            seg_start = max(0, segment_position - segment_duration/2)
+                            seg_end = min(video_duration, segment_position + segment_duration/2)
+                            
+                            if seg_end - seg_start >= 2.0:  # Only create if at least 2 seconds
+                                new_segment = Segment(
+                                    start=seg_start,
+                                    end=seg_end,
+                                    score=0.65,  # Good score for filling gaps
+                                    segment_type=SegmentType.CUSTOM
+                                )
+                                
+                                # Add to both the zone group and processed segments
+                                zone_groups[zone_idx].append(new_segment)
+                                processed_segments.append(new_segment)
+                                
+                                console.print(f"[blue]Added new segment {seg_start:.1f}-{seg_end:.1f}s in zone {zone_idx+1}/{zone_count}[/blue]")
+                                
+                                # Reduce needed count
+                                needed_segments -= 1
+                                if needed_segments <= 0:
+                                    break
+                        
+                        if needed_segments <= 0:
+                            break
                     
-                    # Select top segments for this clip
-                    clip_duration = duration  # Use the requested duration
+                    # If we still need more segments, add some in sparsely populated zones
+                    if needed_segments > 0:
+                        # Find zones with few segments
+                        sparse_zones = [i for i, segments in zone_groups.items() 
+                                      if len(segments) < 2 and i not in empty_zones]
+                        
+                        for zone_idx in sparse_zones:
+                            zone_start = zone_idx * zone_size
+                            zone_end = min(video_duration, (zone_idx + 1) * zone_size)
+                            
+                            # Find a gap within this zone's existing segments
+                            existing_segments = sorted(zone_groups[zone_idx], key=lambda x: x.start)
+                            
+                            # Find the largest gap between segments or zone boundaries
+                            gaps = []
+                            prev_end = zone_start
+                            
+                            for segment in existing_segments:
+                                if segment.start > prev_end + 2.0:  # Need at least 2s gap
+                                    gaps.append((prev_end, segment.start))
+                                prev_end = segment.end
+                            
+                            # Check for gap at the end of zone
+                            if zone_end > prev_end + 2.0:
+                                gaps.append((prev_end, zone_end))
+                            
+                            # Create segment in the largest gap
+                            if gaps:
+                                gaps.sort(key=lambda x: x[1]-x[0], reverse=True)  # Sort by gap size
+                                gap_start, gap_end = gaps[0]
+                                
+                                gap_duration = gap_end - gap_start
+                                gap_midpoint = gap_start + (gap_duration / 2)
+                                
+                                # Create a segment within the gap (3-5s)
+                                segment_duration = min(max(3.0, gap_duration * 0.7), 5.0)
+                                
+                                new_segment = Segment(
+                                    start=max(0, gap_midpoint - segment_duration/2),
+                                    end=min(video_duration, gap_midpoint + segment_duration/2),
+                                    score=0.6,
+                                    segment_type=SegmentType.CUSTOM
+                                )
+                                
+                                zone_groups[zone_idx].append(new_segment)
+                                processed_segments.append(new_segment)
+                                
+                                console.print(f"[blue]Added gap-filling segment {new_segment.start:.1f}-{new_segment.end:.1f}s in zone {zone_idx+1}[/blue]")
+                                
+                                needed_segments -= 1
+                                if needed_segments <= 0:
+                                    break
+                
+                # Update segment count after additions
+                total_segments = len(processed_segments)
+                console.print(f"[green]✓ Now have {total_segments} total segments to work with[/green]")
+                
+                # Create clip groups using professional video editing approach
+                # Each clip should come from a different part of the video
+                
+                # Calculate zones per clip (with slight overlap for better transitions)
+                zones_per_clip = max(2, zone_count // num_clips)
+                
+                # Create segment groups - one per clip
+                segment_groups = []
+                for i in range(num_clips):
+                    # Center zone for this clip
+                    center_zone = int(((i * zone_count) / num_clips) + (zones_per_clip / 2))
+                    # Calculate zone range with slight overlap between clips
+                    half_width = zones_per_clip // 2
+                    start_zone = max(0, center_zone - half_width)
+                    end_zone = min(zone_count, center_zone + half_width + 1)
+                    
+                    # Get all segments in these zones
+                    group = []
+                    for z in range(start_zone, end_zone):
+                        group.extend(zone_groups[z])
+                    
+                    # Ensure we have enough segments (at least 5-8 per clip)
+                    if len(group) < 5:
+                        # Add more segments from nearby zones if needed
+                        nearby_zones = list(range(max(0, start_zone-2), start_zone)) + \
+                                      list(range(end_zone, min(zone_count, end_zone+2)))
+                        
+                        for z in nearby_zones:
+                            group.extend(zone_groups[z])
+                            if len(group) >= 8:  # Enough segments now
+                                break
+                    
+                    # If still under 5 segments, add highest-scoring segments from anywhere
+                    if len(group) < 5:
+                        # Sort all segments by score and add best ones
+                        score_sorted = sorted(processed_segments, key=lambda x: -x.score)
+                        for segment in score_sorted:
+                            if segment not in group:
+                                group.append(segment)
+                                if len(group) >= 5:
+                                    break
+                    
+                    # Add this segment group
+                    segment_groups.append(group)
+                    console.print(f"[blue]Clip {i+1}: Using {len(group)} segments from zones {start_zone}-{end_zone} ({int(start_zone*zone_size)}s-{int(end_zone*zone_size)}s)[/blue]")
+                
+                console.print(f"[green]✓ Created {len(segment_groups)} professional clip groups across the video[/green]")
+                
+                # Processing is complete - all segment groups have been created
+                
+                # Now process each group into a clip with as little overlap as possible
+                for i, section_segments in enumerate(segment_groups):
+                    if not section_segments:
+                        console.print(f"[red]Warning: No segments for clip {i+1}. Skipping.[/red]")
+                        continue
+                    
+                    section_start = section_segments[0].start if section_segments else 0
+                    section_end = section_segments[-1].end if section_segments else video_duration
+                    
+                    console.print(f"[blue]Clip {i+1}: {section_start:.1f}s-{section_end:.1f}s will use {len(section_segments)} segments[/blue]")
+                    
+                    # Create IDs for tracking
+                    section_ids = [(s.start, s.end) for s in section_segments]
+                    
+                    # If we need more segments, try to grab unique ones without overlapping other clips
+                    if len(section_segments) < 5 and total_segments > 5:
+                        # Get segments we haven't used yet - check by ID instead of object
+                        unused_segments = []
+                        for s in processed_segments:
+                            s_id = (s.start, s.end)
+                            if s_id not in used_segment_ids and s_id not in section_ids:
+                                unused_segments.append(s)
+                        
+                        # Sort by score
+                        score_sorted = sorted(unused_segments, key=lambda x: -x.score)
+                        
+                        # Add some of these unique segments
+                        added_count = 0
+                        for seg in score_sorted:
+                            seg_id = (seg.start, seg.end)
+                            if seg_id not in section_ids and added_count < 5:
+                                section_segments.append(seg)
+                                section_ids.append(seg_id)
+                                added_count += 1
+                                
+                        console.print(f"[blue]Added {added_count} additional unique segments to clip {i+1}[/blue]")
+                    
+                    # Sort segments by time for smooth playback
+                    section_segments.sort(key=lambda x: x.start)
+                    
+                    # Mark these segments as used by ID
+                    for seg in section_segments:
+                        used_segment_ids.add((seg.start, seg.end))
                     try:
                         # Use min_spacing from config (reduced for multi-clip mode)
                         min_spacing = get_config("min_spacing_between_segments", 10.0) / 2  # Reduce spacing for multi-clip
                         selected_segments = selector.select_top_segments(
-                            zone_segments, 
-                            max_duration=clip_duration,
-                            min_spacing=min_spacing
+                            section_segments, 
+                            max_duration=clip_target_duration,  # Use exact requested duration for each clip
+                            min_spacing=min_spacing,
+                            force_selection=True  # FORCE usage of the exact segments we've provided
                         )
                     except Exception as e:
                         console.print(f"[yellow]Error selecting top segments for clip {i+1}: {e}[/yellow]")
-                        console.print("[yellow]Using all zone segments[/yellow]")
-                        selected_segments = sorted(zone_segments, key=lambda x: x.start)
+                        console.print("[yellow]Using all section segments in time order[/yellow]")
+                        selected_segments = sorted(section_segments, key=lambda x: x.start)
                     
                     # Create the output path for this clip
                     clip_name = f"highlight_{i+1}.mp4"
@@ -510,16 +755,37 @@ def process(
                             # Look for more segments with lower score threshold
                             logger.info("Finding more quality segments from different parts of the video...")
                         
+                        # Check for segment overlap between clips for debugging
+                        if 'all_selected_times' not in locals():
+                            all_selected_times = set()
+                        
+                        # Debug info about segment uniqueness
+                        segment_times = [(seg.start, seg.end) for seg in selected_segments]
+                        overlap_count = sum(1 for time in segment_times if time in all_selected_times)
+                        
+                        if overlap_count > 0:
+                            console.print(f"[yellow]WARNING: Clip {i+1} has {overlap_count} segments that overlap with previous clips[/yellow]")
+                        
+                        # Store these segment times for comparison with next clip
+                        all_selected_times.update(segment_times)
+                        
+                        # Create a tag to differentiate this clip from others
+                        clip_tag = f"section_{i+1}"
+                        
                         # Create the highlight clip with enhanced captions and highlighting
                         output_path, clip_duration = video_editor.create_clip(
                             selected_segments, 
                             clip_path,
-                            max_duration=duration,  # Use the requested duration
+                            max_duration=clip_target_duration,  # Use the same target duration for each clip
+                            min_segment_duration=min_segment,  # Pass CLI parameter
+                            max_segment_duration=max_segment,  # Pass CLI parameter
                             viral_style=True,
-                            add_captions=True,  # Force captions on for better quality
+                            add_captions=captions,  # Use the CLI option for captions
                             highlight_keywords=highlight_keywords,
                             force_algorithm=force_timing_algorithm,  # Pass the flag to control timing
-                            target_duration=duration  # Explicitly set target duration
+                            target_duration=clip_target_duration,  # Explicitly set same target duration for each clip
+                            vertical_format=vertical,  # Use vertical format for shorts/reels if requested
+                            clip_tag=clip_tag  # Pass a unique tag to differentiate clips
                         )
                         clip_files.append(output_path)
                         console.print(f"[green]Created clip {i+1}/{num_clips} ({clip_duration:.1f}s)[/green]")

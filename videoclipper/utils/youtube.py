@@ -148,16 +148,56 @@ def parse_srt_file(srt_path: str) -> List[Segment]:
             "is_subtitle_entry": True  # Flag to identify subtitle-based segments
         }
         
-        # Create a segment with precise timing information
-        segment = Segment(
-            start=entry['start'],
-            end=entry['end'],
-            score=0.7,  # Decent default score for subtitle segments
-            segment_type=SegmentType.SPEECH,
-            text=entry['text'],
-            metadata=metadata  # Include subtitle timing data
-        )
-        segments.append(segment)
+        # Check if this is a longer subtitle segment (>3 seconds)
+        # If so, break it into smaller segments for shorts/reels
+        duration = entry['end'] - entry['start']
+        
+        if duration > 3.0 and len(entry['text'].split()) > 8:
+            # Break into smaller segments (1.5-2 seconds each)
+            num_segments = max(2, int(duration / 1.5))
+            segment_duration = duration / num_segments
+            
+            # Split text roughly into equal parts
+            words = entry['text'].split()
+            words_per_segment = max(1, len(words) // num_segments)
+            
+            for i in range(num_segments):
+                start_word = i * words_per_segment
+                end_word = min(len(words), (i+1) * words_per_segment)
+                
+                if start_word >= len(words):
+                    break
+                    
+                segment_text = " ".join(words[start_word:end_word])
+                segment_start = entry['start'] + (i * segment_duration)
+                segment_end = min(entry['end'], entry['start'] + ((i+1) * segment_duration))
+                
+                # Create segment for this part
+                sub_metadata = metadata.copy()
+                sub_metadata["is_sub_segment"] = True
+                sub_metadata["parent_index"] = entry['index']
+                sub_metadata["segment_index"] = i
+                
+                segment = Segment(
+                    start=segment_start,
+                    end=segment_end,
+                    score=0.75,  # Slightly higher score for sub-segments to prioritize them
+                    segment_type=SegmentType.SPEECH,
+                    text=segment_text,
+                    metadata=sub_metadata
+                )
+                segments.append(segment)
+        else:
+            # For shorter segments, keep as is
+            segment = Segment(
+                start=entry['start'],
+                end=entry['end'],
+                score=0.7,  # Decent default score for subtitle segments
+                segment_type=SegmentType.SPEECH,
+                text=entry['text'],
+                metadata=metadata  # Include subtitle timing data
+            )
+            segments.append(segment)
     
     return segments
 
